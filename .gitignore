@@ -1,0 +1,17 @@
+# ESP-IDF build artifacts
+build/
+sdkconfig.old
+managed_components/
+
+# Artefatto shell accidentale
+type
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/settings.json
+.idea/
+*.swp
+*.orig
