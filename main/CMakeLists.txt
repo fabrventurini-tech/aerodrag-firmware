@@ -10,6 +10,7 @@ idf_component_register(
         "../components/display"
         "../components/battery"
         "../components/wifi"
+        "../components/ota"
     REQUIRES
         nvs_flash
         driver
@@ -22,6 +23,9 @@ idf_component_register(
         bt
         spi_flash
         spiffs
+        esp_http_client
+        app_update
+        espressif__qrcode
     PRIV_REQUIRES
         esp_driver_gpio
         esp_driver_i2c
