@@ -1,0 +1,58 @@
+# ─── CPU ─────────────────────────────────────────────────────────────────────
+CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+
+# ─── Flash & PSRAM ────────────────────────────────────────────────────────────
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_USE_MALLOC=y
+
+# ─── Bluetooth (NimBLE stack — lighter than Bluedroid) ───────────────────────
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=4      # 3 sensori BLE + 1 app
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y      # verso l'app React Native
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=y         # verso Power/CSC/HR sensor
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
+CONFIG_BT_NIMBLE_NVS_PERSIST=y
+CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=100
+
+# ─── WiFi (richiesta per modalità Coach — collegamento al Pi) ────────────────
+# CONFIG_ESP_WIFI_ENABLED è abilitato di default in ESP-IDF 5.2
+# Rimosso il disable: wifi_coach.h richiede esp_wifi_init/start.
+
+# ─── FreeRTOS ─────────────────────────────────────────────────────────────────
+CONFIG_FREERTOS_HZ=1000
+CONFIG_FREERTOS_USE_TRACE_FACILITY=n
+
+# ─── Logging ─────────────────────────────────────────────────────────────────
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
+
+# ─── NVS (non-volatile storage for calibration, session log) ─────────────────
+CONFIG_NVS_ENCRYPTION=n
+
+# ─── Power management ────────────────────────────────────────────────────────
+CONFIG_PM_ENABLE=y
+CONFIG_PM_DFS_INIT_AUTO=y
+CONFIG_ESP_SLEEP_POWER_DOWN_FLASH=y
+
+# ─── I2C ─────────────────────────────────────────────────────────────────────
+CONFIG_I2C_ISR_IRAM_SAFE=y
+
+# ─── UART ────────────────────────────────────────────────────────────────────
+CONFIG_UART_ISR_IN_IRAM=y
+
+# ─── SPI (for display) ───────────────────────────────────────────────────────
+CONFIG_SPI_MASTER_ISR_IN_IRAM=y
+
+# ─── Partition table ─────────────────────────────────────────────────────────
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# ─── PSRAM (ESP32-S3R2 = 2MB OPI) ───────────────────────────────────────────
+CONFIG_SPIRAM_SIZE=2097152
+CONFIG_SPIRAM_USE_CAPS_ALLOC=y
+# Framebuffer 240x240x2 = 115KB fits in internal RAM if PSRAM unavailable

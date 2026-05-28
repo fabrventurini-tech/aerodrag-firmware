@@ -1,0 +1,10 @@
+idf_component_register(
+    SRCS
+        "ble_sensors.c"
+    INCLUDE_DIRS
+        "."
+    REQUIRES
+        bt
+        freertos
+        esp_common
+)

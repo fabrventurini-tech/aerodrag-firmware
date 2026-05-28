@@ -1,0 +1,7 @@
+-mlongcalls
+-fno-builtin-memcpy
+-fno-builtin-memset
+-fno-builtin-bzero
+-mdisable-hardware-atomics
+"-specs=C:/Users/fabrv/Desktop/aerodrag-firmware/build/specs/picolibc.specs"
+-fno-rtti

@@ -1,0 +1,31 @@
+idf_component_register(
+    SRCS
+        "main.c"
+    INCLUDE_DIRS
+        "."
+        "../components/pitot"
+        "../components/imu"
+        "../components/ble"
+        "../components/ble_central"
+        "../components/display"
+        "../components/battery"
+        "../components/wifi"
+    REQUIRES
+        nvs_flash
+        driver
+        esp_timer
+        esp_adc
+        esp_event
+        esp_netif
+        esp_wifi
+        esp_websocket_client
+        bt
+        spi_flash
+        spiffs
+    PRIV_REQUIRES
+        esp_driver_gpio
+        esp_driver_i2c
+        esp_driver_uart
+        esp_driver_spi
+        esp_driver_ledc
+)
