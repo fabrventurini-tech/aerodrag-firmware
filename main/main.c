@@ -266,6 +266,10 @@ static void task_display(void *arg)
             display_next_screen();
         }
 
+        // Auto-advance from pairing screen once phone has connected via BLE
+        if (display_get_screen() == SCR_PAIRING && ble_is_connected())
+            display_set_screen(SCR_CDA);
+
         SENSORS_LOCK();
         aerodrag_sensors_t s_copy = g_sensors;
         aerodrag_physics_t p_copy = g_physics;
@@ -400,11 +404,12 @@ void app_main(void)
     g_sensors.gps_fix      = 2;
     g_sensors.humidity_pct = 50.0f;
 
-    battery_init(&g_bat, ADC_CHANNEL_0);
+    battery_init(&g_bat, BAT_ADC_CHANNEL);
 
     ret = display_init();
     if (ret != ESP_OK)
         ESP_LOGW(TAG, "Display init failed: %d", ret);
+    display_set_pairing_id(g_identity.device_id);
 
     g_sensors_mutex = xSemaphoreCreateMutex();
     g_i2c1_mutex    = xSemaphoreCreateMutex();

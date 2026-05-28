@@ -25,6 +25,7 @@ idf_component_register(
         spiffs
         esp_http_client
         app_update
+        espressif__qrcode
     PRIV_REQUIRES
         esp_driver_gpio
         esp_driver_i2c

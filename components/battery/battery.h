@@ -7,8 +7,8 @@
 #include <string.h>
 
 // ─── Battery ADC ──────────────────────────────────────────────────────────────
-// ESP32-S3-LCD-1.28: GPIO1 → 200K + 100K divider → Vbat/3
-// Formula from Waveshare wiki: Vbat = 3.3 / 4096 * 3 * adc_raw
+// ESP32-S3-Touch-LCD-2.8: GPIO8 → 200K + 100K divider → Vbat/3
+// Formula: Vbat = 3.3 / 4096 * 3 * adc_raw
 
 #define BAT_SAMPLES     16
 #define BAT_VREF_MV    3300.0f
