@@ -420,6 +420,13 @@ static screen_t g_screen = SCR_PAIRING;
 
 screen_t display_get_screen(void) { return g_screen; }
 
+// ─── Status dots (bottom-right corner, all non-pairing screens) ──────────────
+static void render_status_dots(const aerodrag_sensors_t *s)
+{
+    fb_circle(FB_W - 8,  FB_H - 8, 3, s->pitot_valid ? COL_TEAL : COL_MUTED);
+    fb_circle(FB_W - 16, FB_H - 8, 3, s->ant_valid   ? COL_TEAL : COL_MUTED);
+}
+
 // ─── Render ───────────────────────────────────────────────────────────────────
 void display_render(const aerodrag_sensors_t *s, const aerodrag_physics_t *p)
 {
@@ -497,7 +504,7 @@ switch (g_screen) {
             fb_arc(CX, CY, 110, 12, ba - 1.5f, ba + 1.5f, rgb(255,255,255));
         }
 
-        fb_str(CX - 9, 10, "CdA", COL_MUTED, 1);
+        fb_str((FB_W - 36) / 2, 8, "CdA", COL_MUTED, 2);
 
         // Grade (hero)
         const char *grade     = valid ? cda_grade(cda) : "--";
@@ -511,15 +518,15 @@ switch (g_screen) {
             snprintf(buf, sizeof(buf), "0.%03d", (int)(cda * 1000) % 1000);
             int vw = (int)strlen(buf) * 12;
             fb_str((FB_W - vw) / 2, CY + 8, buf, COL_TEXT, 2);
-            fb_str(CX - 6, CY + 26, "m2", COL_MUTED, 1);
+            fb_str(CX - 12, CY + 26, "m2", COL_MUTED, 2);
         } else {
             fb_str(CX - 18, CY + 8, "---", COL_MUTED, 2);
         }
 
         // "NEW BEST" blink
         if (now_ms < g_best_flash_end && (now_ms / 500) % 2 == 0) {
-            int nbw = (int)strlen("NEW BEST") * 6;
-            fb_str((FB_W - nbw) / 2, CY + 44, "NEW BEST", COL_TEAL, 1);
+            int nbw = (int)strlen("NEW BEST") * 12;
+            fb_str((FB_W - nbw) / 2, CY + 44, "NEW BEST", COL_TEAL, 2);
         }
 
         // Bottom info bar
@@ -528,7 +535,7 @@ switch (g_screen) {
             char spd[6];
             snprintf(spd, sizeof(spd), "%d", (int)(p->v_ground_ms * 3.6f));
             fb_str(8, bby, spd, COL_TEXT, 2);
-            fb_str(8 + (int)strlen(spd) * 12, bby + 8, "km/h", COL_MUTED, 1);
+            fb_str(8 + (int)strlen(spd) * 12, bby + 8, "km/h", COL_MUTED, 2);
         }
         if (s->pitot_valid && s->pitot_pa > 0.3f) {
             float v_air = sqrtf(2.0f * s->pitot_pa / 1.225f) * 3.6f;
@@ -536,28 +543,28 @@ switch (g_screen) {
             snprintf(wa, sizeof(wa), "%d", (int)v_air);
             int wx = CX - (int)strlen(wa) * 6;
             fb_str(wx, bby, wa, COL_TEAL, 2);
-            fb_str(wx + (int)strlen(wa) * 12, bby + 8, "wind", COL_MUTED, 1);
+            fb_str(wx + (int)strlen(wa) * 12, bby + 8, "wind", COL_MUTED, 2);
         }
         if (s->power_w > 0) {
             char pw[6];
             snprintf(pw, sizeof(pw), "%d", s->power_w);
             int px = FB_W - (int)strlen(pw) * 12 - 14;
             fb_str(px, bby, pw, COL_AMBER, 2);
-            fb_str(px + (int)strlen(pw) * 12, bby + 8, "W", COL_MUTED, 1);
+            fb_str(px + (int)strlen(pw) * 12, bby + 8, "W", COL_MUTED, 2);
         }
 
-        // Status dots
+        // Battery arc + status dots
         float bat = s->battery_pct / 100.0f;
         if (bat > 0.02f)
             fb_arc(CX, CY, 115, 4, 70.0f, 70.0f + bat * 40.0f,
                    bat > 0.25f ? COL_TEAL : COL_RED);
-        fb_circle(FB_W - 12, 12, 4, s->pitot_valid ? COL_TEAL : COL_MUTED);
+        render_status_dots(s);
         break;
     }
 
     // ── Speed ─────────────────────────────────────────────────────────────────
     case SCR_SPEED: {
-        fb_str(CX - 15, 10, "Speed", COL_MUTED, 1);
+        fb_str((FB_W - 60) / 2, 8, "Speed", COL_MUTED, 2);
 
         float spd_kmh = s->gps_valid      ? s->speed_ms * 3.6f
                       : (p && p->valid)   ? p->v_ground_ms * 3.6f
@@ -567,8 +574,8 @@ switch (g_screen) {
         int sw = (int)strlen(spd_buf) * 36;   // scale 6
         fb_str((FB_W - sw) / 2, CY - 22, spd_buf, COL_TEXT, 6);
 
-        int km_w = 4 * 6;   // "km/h" scale 1
-        fb_str((FB_W - km_w) / 2, CY + 26, "km/h", COL_MUTED, 1);
+        int km_w = 4 * 12;   // "km/h" scale 2
+        fb_str((FB_W - km_w) / 2, CY + 26, "km/h", COL_MUTED, 2);
 
         if (s->pitot_valid && s->pitot_pa > 0.3f) {
             float v_air   = sqrtf(2.0f * s->pitot_pa / 1.225f) * 3.6f;
@@ -576,27 +583,28 @@ switch (g_screen) {
             char  air[20], wind[20];
             snprintf(air,  sizeof(air),  "Air: %d km/h",  (int)v_air);
             snprintf(wind, sizeof(wind), "Wind: %+d km/h", (int)delta);
-            int aw = (int)strlen(air) * 6, ww = (int)strlen(wind) * 6;
-            fb_str((FB_W - aw) / 2, CY + 44, air,  COL_TEAL, 1);
+            int aw = (int)strlen(air) * 12, ww = (int)strlen(wind) * 12;
+            fb_str((FB_W - aw) / 2, CY + 44, air,  COL_TEAL, 2);
             uint16_t wcol = (delta >  2.0f) ? COL_RED
                           : (delta < -2.0f) ? COL_TEAL : COL_MUTED;
-            fb_str((FB_W - ww) / 2, CY + 56, wind, wcol, 1);
+            fb_str((FB_W - ww) / 2, CY + 60, wind, wcol, 2);
         }
 
         if (s->hr_bpm > 0) {
             char hr[6];
             snprintf(hr, sizeof(hr), "%d", s->hr_bpm);
-            fb_str(FB_W - (int)strlen(hr) * 12 - 4, 10, hr, COL_RED, 2);
-            fb_str(FB_W - 18, 26, "bpm", COL_MUTED, 1);
+            fb_str(FB_W - (int)strlen(hr) * 12 - 4, 8, hr, COL_RED, 2);
+            fb_str(FB_W - 24, 24, "bpm", COL_MUTED, 2);
         }
 
         if (s->power_w > 0) {
             char pw[12];
             snprintf(pw, sizeof(pw), "%d W", s->power_w);
             int pw_w = (int)strlen(pw) * 12;
-            fb_str((FB_W - pw_w) / 2, FB_H - 30,
+            fb_str((FB_W - pw_w) / 2, FB_H - 44,
                    pw, power_zone_col(s->power_w, g_rider_ftp_w), 2);
         }
+        render_status_dots(s);
         break;
     }
 
@@ -610,13 +618,13 @@ switch (g_screen) {
         int pw_w = (int)strlen(buf) * 18;   // scale 3
         fb_str((FB_W - pw_w) / 2, 10, buf, zone_col, 3);
 
-        int znw = (int)strlen(zone_name) * 6;
-        fb_str((FB_W - znw) / 2, 38, zone_name, zone_col, 1);
+        int znw = (int)strlen(zone_name) * 12;
+        fb_str((FB_W - znw) / 2, 38, zone_name, zone_col, 2);
 
         if (g_rider_mass_kg > 0.0f && s->power_w > 0) {
             snprintf(buf, sizeof(buf), "%.1f W/kg", s->power_w / g_rider_mass_kg);
-            int wkw = (int)strlen(buf) * 6;
-            fb_str((FB_W - wkw) / 2, 50, buf, COL_MUTED, 1);
+            int wkw = (int)strlen(buf) * 12;
+            fb_str((FB_W - wkw) / 2, 56, buf, COL_MUTED, 2);
         }
 
         if (p && p->valid && s->power_w > 0) {
@@ -625,7 +633,7 @@ switch (g_screen) {
             uint8_t pr  = (pr_f > 100.0f) ? 100 : (pr_f < 0.0f) ? 0 : (uint8_t)pr_f;
             uint8_t po  = (pa + pr < 100) ? (100 - pa - pr) : 0;
 
-            const int BH = 100, BY = 80, BW = 30, GAP = 14;
+            const int BH = 100, BY = 84, BW = 30, GAP = 14;
             int bx = (FB_W - (3*BW + 2*GAP)) / 2;
 
             struct { uint8_t pct; uint16_t col; const char *lbl; } bars[3] = {
@@ -655,6 +663,7 @@ switch (g_screen) {
             int dw = 3 * 12;
             fb_str((FB_W - dw) / 2, CY, "---", COL_MUTED, 2);
         }
+        render_status_dots(s);
         break;
     }
 
@@ -670,7 +679,7 @@ switch (g_screen) {
         }
 
         // TL — Battery
-        fb_str(10, 10, "Battery", COL_MUTED, 1);
+        fb_str(10, 10, "Battery", COL_MUTED, 2);
         uint16_t bat_col = s->battery_pct > 25 ? COL_TEAL : COL_RED;
         snprintf(buf, sizeof(buf), "%d", s->battery_pct);
         fb_str(10, 28, buf, bat_col, 4);
@@ -684,29 +693,37 @@ switch (g_screen) {
         }
 
         // TR — Heart Rate
-        fb_str(130, 10, "HR", COL_MUTED, 1);
+        fb_str(130, 10, "HR", COL_MUTED, 2);
         uint16_t hr_col = s->hr_bpm > 0 ? COL_RED : COL_MUTED;
         snprintf(buf, sizeof(buf), "%d", s->hr_bpm > 0 ? s->hr_bpm : 0);
         fb_str(130, 28, buf, hr_col, 4);
-        fb_str(130, 62, "bpm", COL_MUTED, 1);
-        fb_circle(195, 105, 6, hr_col);
+        fb_str(130, 64, "bpm", COL_MUTED, 2);
+        fb_circle(195, 108, 5, hr_col);
 
         // BL — Cadence
-        fb_str(10, 172, "Cadence", COL_MUTED, 1);
+        fb_str(10, 172, "Cadence", COL_MUTED, 2);
         uint16_t cad_col = s->cadence_rpm > 0 ? COL_AMBER : COL_MUTED;
         snprintf(buf, sizeof(buf), "%d", s->cadence_rpm > 0 ? s->cadence_rpm : 0);
         fb_str(10, 190, buf, cad_col, 4);
-        fb_str(10, 224, "rpm", COL_MUTED, 1);
+        fb_str(10, 226, "rpm", COL_MUTED, 2);
 
-        // BR — ANT+ / speed
-        fb_str(130, 172, "ANT+", COL_MUTED, 1);
-        uint16_t ant_col = s->ant_valid ? COL_TEAL : COL_MUTED;
-        fb_str(130, 190, s->ant_valid ? "Active" : "No sig", ant_col, 2);
-        if (s->gps_valid && s->speed_ms > 0.1f) {
-            snprintf(buf, sizeof(buf), "%d km/h", (int)(s->speed_ms * 3.6f));
-            fb_str(130, 224, buf, COL_MUTED, 1);
+        // BR — Power
+        {
+            uint16_t pwr_col = power_zone_col(s->power_w, g_rider_ftp_w);
+            fb_str(130, 172, "Power", COL_MUTED, 2);
+            snprintf(buf, sizeof(buf), "%d", s->power_w > 0 ? s->power_w : 0);
+            fb_str(130, 190, buf, pwr_col, 4);
+            fb_str(130, 226, "W", COL_MUTED, 2);
+            if (s->power_w > 0) {
+                const char *zn = power_zone_name(s->power_w, g_rider_ftp_w);
+                int znw2 = (int)strlen(zn) * 6;
+                fb_str(130, 250, zn, pwr_col, 1);
+                (void)znw2;
+            }
+            // ANT+ status dot
+            uint16_t ant_col = s->ant_valid ? COL_TEAL : COL_MUTED;
+            fb_circle(195, 295, 4, ant_col);
         }
-        fb_circle(195, 265, 6, ant_col);
         break;
     }
 
