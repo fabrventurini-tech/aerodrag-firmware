@@ -19,7 +19,11 @@ jobs:
           esp_idf_version: v6.0.1
           target: esp32s3
           path: '.'
-          command: idf.py fullclean; idf.py build && cp build/aerodrag_firmware.bin build/aerodrag_firmware_$(git rev-parse --short HEAD).bin
+          command: >-
+            idf.py fullclean; idf.py build &&
+            cp build/aerodrag_firmware.bin build/aerodrag_firmware_$(git rev-parse --short HEAD).bin &&
+            cp build/bootloader/bootloader.bin build/ &&
+            cp build/partition_table/partition-table.bin build/
 
       - name: Upload firmware binary
         uses: actions/upload-artifact@v4
@@ -28,9 +32,8 @@ jobs:
           path: |
             build/aerodrag_firmware.bin
             build/aerodrag_firmware_*.bin
-            build/bootloader/bootloader.bin
-            build/partition_table/partition-table.bin
-            build/flash_args
+            build/bootloader.bin
+            build/partition-table.bin
           retention-days: 30
 
       - name: Create release on tag
@@ -39,5 +42,5 @@ jobs:
         with:
           files: |
             build/aerodrag_firmware_*.bin
-            build/bootloader/bootloader.bin
-            build/partition_table/partition-table.bin
+            build/bootloader.bin
+            build/partition-table.bin
