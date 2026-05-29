@@ -291,6 +291,8 @@ static void task_housekeeping(void *arg)
         g_sensors.battery_mv  = g_bat.last_mv;
         SENSORS_UNLOCK();
 
+        ble_notify_battery(g_bat.last_pct);
+
         if (g_bat.last_pct < 5) {
             ESP_LOGW(TAG, "Low battery: %d%% (%.0f mV) — entering sleep",
                      g_bat.last_pct, g_bat.last_mv);
