@@ -19,11 +19,7 @@ jobs:
           esp_idf_version: v6.0.1
           target: esp32s3
           path: '.'
-          command: idf.py fullclean; idf.py build
-
-      - name: Rename binary
-        run: |
-          cp build/aerodrag_firmware.bin build/aerodrag_firmware_$(git rev-parse --short HEAD).bin
+          command: idf.py fullclean; idf.py build && cp build/aerodrag_firmware.bin build/aerodrag_firmware_$(git rev-parse --short HEAD).bin
 
       - name: Upload firmware binary
         uses: actions/upload-artifact@v4
