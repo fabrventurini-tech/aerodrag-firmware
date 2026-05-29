@@ -207,16 +207,6 @@ static void fb_circle(int cx, int cy, int r, uint16_t col)
     }
 }
 
-static void fb_ring(int cx, int cy, int r, int w, uint16_t col)
-{
-    int ro2 = r*r, ri2 = (r-w)*(r-w);
-    for (int y = cy-r; y <= cy+r; y++)
-    for (int x = cx-r; x <= cx+r; x++) {
-        if (x<0||x>=FB_W||y<0||y>=FB_H) continue;
-        int d2 = (x-cx)*(x-cx)+(y-cy)*(y-cy);
-        if (d2 <= ro2 && d2 >= ri2) PX(x,y) = col;
-    }
-}
 
 static void fb_arc(int cx, int cy, int r, int w,
                    float start_deg, float end_deg, uint16_t col)
@@ -241,12 +231,6 @@ static void fb_hline(int x0, int x1, int y, uint16_t col)
     for (int x=x0; x<=x1; x++) if (x>=0&&x<FB_W) PX(x,y)=col;
 }
 
-static void fb_vline(int x, int y0, int y1, uint16_t col)
-{
-    if (x<0||x>=FB_W) return;
-    if (y0>y1) { int t=y0; y0=y1; y1=t; }
-    for (int y=y0; y<=y1; y++) if (y>=0&&y<FB_H) PX(x,y)=col;
-}
 
 // ─── 5×7 pixel font — full ASCII printable (0x20–0x7E) ──────────────────────
 static const uint8_t FONT5X7[][5] = {
@@ -507,7 +491,8 @@ switch (g_screen) {
         // Session best — white tick on arc
         if (g_session_best_cda < 9000.0f) {
             float bp = (g_session_best_cda - 0.18f) / 0.20f;
-            if (bp < 0.0f) bp = 0.0f; if (bp > 1.0f) bp = 1.0f;
+            if (bp < 0.0f) bp = 0.0f;
+            if (bp > 1.0f) bp = 1.0f;
             float ba = -225.0f + bp * 270.0f;
             fb_arc(CX, CY, 110, 12, ba - 1.5f, ba + 1.5f, rgb(255,255,255));
         }
