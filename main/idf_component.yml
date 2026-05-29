@@ -15,4 +15,3 @@ dependencies:
   #   # All dependencies of `main` are public by default.
   #   public: true
   espressif/esp_websocket_client: '*'
-  espressif/qrcode: '>=0.1.0'
