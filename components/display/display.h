@@ -420,6 +420,28 @@ static screen_t g_screen = SCR_PAIRING;
 
 screen_t display_get_screen(void) { return g_screen; }
 
+// ─── Battery icon (20×10 body + 3×4 cap, 4 fill bars) ───────────────────────
+static void fb_battery(int x, int y, uint8_t pct, uint16_t col)
+{
+    // Body outline
+    fb_hline(x, x+19, y,   col);
+    fb_hline(x, x+19, y+9, col);
+    for (int dy = y; dy <= y+9; dy++) if (dy>=0&&dy<FB_H) { PX(x, dy)=col; PX(x+19, dy)=col; }
+    // Cap
+    fb_hline(x+20, x+22, y+3, col);
+    fb_hline(x+20, x+22, y+6, col);
+    for (int dy = y+3; dy <= y+6; dy++) if (dy>=0&&dy<FB_H) PX(x+22, dy) = col;
+    // 4 fill bars (3×6 each, 1px gap)
+    int bars = pct * 4 / 100;
+    for (int b = 0; b < 4; b++) {
+        int bx = x + 2 + b * 4;
+        uint16_t fc = (b < bars) ? col : COL_SURFACE;
+        for (int fy = y+2; fy <= y+7; fy++)
+            for (int fx = bx; fx < bx+3; fx++)
+                if (fx>=0&&fx<FB_W&&fy>=0&&fy<FB_H) PX(fx,fy) = fc;
+    }
+}
+
 // ─── Status dots (bottom-right corner, all non-pairing screens) ──────────────
 static void render_status_dots(const aerodrag_sensors_t *s)
 {
@@ -553,11 +575,15 @@ switch (g_screen) {
             fb_str(px + (int)strlen(pw) * 12, bby + 8, "W", COL_MUTED, 2);
         }
 
-        // Battery arc + status dots
-        float bat = s->battery_pct / 100.0f;
-        if (bat > 0.02f)
-            fb_arc(CX, CY, 115, 4, 70.0f, 70.0f + bat * 40.0f,
-                   bat > 0.25f ? COL_TEAL : COL_RED);
+        // Battery icon top-right
+        {
+            uint16_t bat_col = s->battery_pct > 25 ? COL_TEAL : COL_RED;
+            char bat_str[6];
+            snprintf(bat_str, sizeof(bat_str), "%d%%", s->battery_pct);
+            int bpw = (int)strlen(bat_str) * 12;
+            fb_str(FB_W - 24 - bpw - 3, 8, bat_str, bat_col, 2);
+            fb_battery(FB_W - 24, 8, s->battery_pct, bat_col);
+        }
         render_status_dots(s);
         break;
     }
@@ -678,17 +704,26 @@ switch (g_screen) {
             if (y >= 0 && y < FB_H) { PX(119,y) = COL_SURFACE; PX(120,y) = COL_SURFACE; }
         }
 
-        // TL — Battery
-        fb_str(10, 10, "Battery", COL_MUTED, 2);
-        uint16_t bat_col = s->battery_pct > 25 ? COL_TEAL : COL_RED;
-        snprintf(buf, sizeof(buf), "%d", s->battery_pct);
-        fb_str(10, 28, buf, bat_col, 4);
-        fb_str(10 + (int)strlen(buf) * 24, 42, "%", bat_col, 2);
+        // TL — CdA
         {
-            int bat_bar = 80 * s->battery_pct / 100;
-            for (int y = 80; y < 90; y++) {
-                for (int x = 10; x < 90; x++) if (x<FB_W&&y<FB_H) PX(x,y) = COL_SURFACE;
-                for (int x = 10; x < 10 + bat_bar; x++) if (x<FB_W&&y<FB_H) PX(x,y) = bat_col;
+            bool   cda_valid = (p && p->valid);
+            float  cda_val   = cda_valid ? p->CdA : 0.0f;
+            float  cpct = cda_valid ? (cda_val - 0.18f) / 0.20f : 0.0f;
+            if (cpct < 0.0f) cpct = 0.0f; if (cpct > 1.0f) cpct = 1.0f;
+            uint16_t cda_col = (cpct < 0.33f) ? COL_TEAL
+                             : (cpct < 0.67f) ? COL_AMBER : COL_RED;
+            if (!cda_valid) cda_col = COL_MUTED;
+
+            fb_str(10, 10, "CdA", COL_MUTED, 2);
+            if (cda_valid) {
+                snprintf(buf, sizeof(buf), "0.%03d", (int)(cda_val * 1000) % 1000);
+                fb_str(10, 28, buf, cda_col, 3);
+                const char *gr = cda_grade(cda_val);
+                int gw2 = (int)strlen(gr) * 12;
+                fb_str(10, 72, gr, cda_col, 2);
+                (void)gw2;
+            } else {
+                fb_str(10, 28, "---", COL_MUTED, 3);
             }
         }
 
