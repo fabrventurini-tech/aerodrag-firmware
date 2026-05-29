@@ -412,6 +412,7 @@ void app_main(void)
     if (ret != ESP_OK)
         ESP_LOGW(TAG, "Display init failed: %d", ret);
     display_set_pairing_id(g_identity.device_id);
+    display_set_rider_config(g_cal.mass_kg, 0);   // ftp_w=0 → use default 250W
 
     g_sensors_mutex = xSemaphoreCreateMutex();
     g_i2c1_mutex    = xSemaphoreCreateMutex();

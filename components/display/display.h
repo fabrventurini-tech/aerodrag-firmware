@@ -370,212 +370,360 @@ static void fb_str(int x, int y, const char *s, uint16_t col, int scale)
 // ─── QR pairing state ────────────────────────────────────────────────────────
 #define QR_BUF_LEN  qrcodegen_BUFFER_LEN_FOR_VERSION(5)
 
-static char    g_pairing_id[32]    = {0};
+static char    g_pairing_id[32]      = {0};
 static uint8_t g_qr_cache[QR_BUF_LEN] = {0};
-static bool    g_qr_valid          = false;
+static bool    g_qr_valid            = false;
 
 void display_set_pairing_id(const char *id)
 {
     strlcpy(g_pairing_id, id, sizeof(g_pairing_id));
-
     uint8_t tmp[QR_BUF_LEN];
     char qr_text[64];
-    // Uppercase URI: all chars are in QR alphanumeric set → smaller code (version 2)
     snprintf(qr_text, sizeof(qr_text), "AERODRAG://PAIR/%s", id);
     g_qr_valid = qrcodegen_encodeText(qr_text, tmp, g_qr_cache,
                                        qrcodegen_Ecc_LOW, 1, 5,
                                        qrcodegen_Mask_AUTO, true);
 }
 
+// ─── Session best + rider config ─────────────────────────────────────────────
+static float    g_session_best_cda = 9999.0f;
+static uint32_t g_best_flash_end   = 0;
+static float    g_rider_mass_kg    = 75.0f;
+static uint16_t g_rider_ftp_w      = 250;
+
+void display_set_rider_config(float mass_kg, uint16_t ftp_w)
+{
+    g_rider_mass_kg = (mass_kg > 0.0f) ? mass_kg : 75.0f;
+    g_rider_ftp_w   = (ftp_w  > 0)    ? ftp_w   : 250;
+}
+
+static const char *cda_grade(float cda)
+{
+    if (cda < 0.200f) return "A+";
+    if (cda < 0.220f) return "A";
+    if (cda < 0.250f) return "B";
+    if (cda < 0.280f) return "C";
+    return "D";
+}
+
+static uint16_t power_zone_col(uint16_t w, uint16_t ftp)
+{
+    if (!ftp || !w) return COL_MUTED;
+    uint32_t pct = (uint32_t)w * 100u / ftp;
+    if (pct < 55)  return COL_MUTED;
+    if (pct < 75)  return COL_TEAL;
+    if (pct < 90)  return rgb(80, 200, 120);
+    if (pct < 105) return COL_AMBER;
+    if (pct < 120) return rgb(255, 120, 20);
+    return COL_RED;
+}
+
+static const char *power_zone_name(uint16_t w, uint16_t ftp)
+{
+    if (!ftp || !w) return "";
+    uint32_t pct = (uint32_t)w * 100u / ftp;
+    if (pct < 55)  return "Z1 Recovery";
+    if (pct < 75)  return "Z2 Endurance";
+    if (pct < 90)  return "Z3 Tempo";
+    if (pct < 105) return "Z4 Threshold";
+    if (pct < 120) return "Z5 VO2Max";
+    return "Z6 Anaerobic";
+}
+
 // ─── Screen state ─────────────────────────────────────────────────────────────
-typedef enum { SCR_PAIRING=0, SCR_CDA, SCR_POWER, SCR_STATUS, SCR_COUNT } screen_t;
+typedef enum { SCR_PAIRING=0, SCR_CDA, SCR_SPEED, SCR_POWER, SCR_STATUS, SCR_COUNT } screen_t;
 static screen_t g_screen = SCR_PAIRING;
 
-screen_t display_get_screen(void)
-{
-    return g_screen;
-}
+screen_t display_get_screen(void) { return g_screen; }
 
 // ─── Render ───────────────────────────────────────────────────────────────────
 void display_render(const aerodrag_sensors_t *s, const aerodrag_physics_t *p)
 {
     if (!g_fb) return;
-    const int CX = FB_W/2, CY = FB_H/2;   // 120, 160
+    const int CX = FB_W / 2, CY = FB_H / 2;   // 120, 160
 
     fb_fill(COL_BG);
 
-    if (g_screen != SCR_PAIRING)
-        fb_ring(CX, CY, 116, 3, COL_SURFACE);
-
 switch (g_screen) {
 
+    // ── Pairing ───────────────────────────────────────────────────────────────
     case SCR_PAIRING: {
         if (!g_qr_valid) {
-            // fallback: just show device ID
             int w = (int)strlen(g_pairing_id) * 6;
             fb_str((FB_W - w) / 2, CY - 4, g_pairing_id, COL_TEAL, 1);
             break;
         }
-        int sz  = qrcodegen_getSize(g_qr_cache);
-        const int SCALE = 7;
-        const int PAD   = 10;   // white quiet-zone pixels on each side
+        int sz     = qrcodegen_getSize(g_qr_cache);
+        const int SCALE = 7, PAD = 10;
         int qr_px  = sz * SCALE;
         int rect_w = qr_px + 2 * PAD;
         int rect_h = qr_px + 2 * PAD;
-        int rx = (FB_W - rect_w) / 2;
-        int ry = 20;
-        int ox = rx + PAD;
-        int oy = ry + PAD;
+        int rx = (FB_W - rect_w) / 2, ry = 20;
+        int ox = rx + PAD, oy = ry + PAD;
 
-        // White background for QR
-        uint16_t WHITE = rgb(255,255,255);
-        uint16_t BLACK = rgb(0,0,0);
+        uint16_t WHITE = rgb(255,255,255), BLACK = rgb(0,0,0);
         for (int y = ry; y < ry + rect_h; y++)
             for (int x = rx; x < rx + rect_w; x++)
                 if (x>=0&&x<FB_W&&y>=0&&y<FB_H) PX(x,y) = WHITE;
 
-        // QR modules
         for (int qy = 0; qy < sz; qy++)
         for (int qx = 0; qx < sz; qx++) {
             uint16_t c = qrcodegen_getModule(g_qr_cache, qx, qy) ? BLACK : WHITE;
             for (int sy = 0; sy < SCALE; sy++)
             for (int sx = 0; sx < SCALE; sx++) {
-                int px = ox + qx*SCALE + sx;
-                int py = oy + qy*SCALE + sy;
+                int px = ox + qx*SCALE + sx, py = oy + qy*SCALE + sy;
                 if (px>=0&&px<FB_W&&py>=0&&py<FB_H) PX(px,py) = c;
             }
         }
 
-        // Device ID below QR (scale=1 fits "AA:BB:CC:DD:EE:FF" = 102px)
-        {
-            int id_len = (int)strlen(g_pairing_id);
-            int id_w   = id_len * 6;
-            int id_x   = (FB_W - id_w) / 2;
-            int id_y   = ry + rect_h + 8;
-            fb_str(id_x, id_y, g_pairing_id, COL_MUTED, 1);
-        }
-
-        // "Not connected" indicator dot
-        fb_circle(CX, ry + rect_h + 30, 4, COL_RED);
+        int id_w = (int)strlen(g_pairing_id) * 6;
+        fb_str((FB_W - id_w) / 2, ry + rect_h + 8, g_pairing_id, COL_MUTED, 1);
+        fb_circle(CX, ry + rect_h + 28, 4, COL_RED);
         break;
     }
 
+    // ── CdA / Performance ─────────────────────────────────────────────────────
     case SCR_CDA: {
-        float cda = (p && p->valid) ? p->CdA : 0.0f;
-        float pct = (cda - 0.20f) / 0.18f;
-        if (pct < 0) pct = 0;
-        if (pct > 1) pct = 1;
-        uint16_t arc_col = (pct < 0.35f) ? COL_TEAL
-                         : (pct < 0.65f) ? COL_AMBER
-                         :                  COL_RED;
-        fb_arc(CX, CY, 110, 10, -225.0f, 45.0f, COL_SURFACE);
-        if (pct > 0.01f)
-            fb_arc(CX, CY, 110, 10, -225.0f, -225.0f + pct*270.0f, arc_col);
-        fb_str(CX - 12, CY - 58, "CdA", COL_MUTED, 1);
-        if (p && p->valid) {
-            char buf[8];
-            fb_str(CX - 52, CY - 26, "0.", COL_MUTED, 3);
-            snprintf(buf, sizeof(buf), "%03d", (int)(cda * 1000) % 1000);
-            fb_str(CX - 28, CY - 32, buf, arc_col, 4);
-            fb_str(CX - 12, CY + 20, "m^2", COL_MUTED, 1);
-        } else {
-            if (s->pitot_valid && s->pitot_pa > 0.3f) {
-                float rho = 1.225f;
-                float v_air = sqrtf(2.0f * s->pitot_pa / rho) * 3.6f;
-                char buf[6];
-                snprintf(buf, sizeof(buf), "%d", (int)v_air);
-                fb_str(CX - 20, CY - 22, buf, COL_TEAL, 3);
-                fb_str(CX - 18, CY + 12, "km/h", COL_MUTED, 2);
-            } else {
-                fb_str(CX - 42, CY - 22, "0.---", COL_MUTED, 3);
-            }
+        bool  valid = (p && p->valid);
+        float cda   = valid ? p->CdA : 0.0f;
+
+        uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000LL);
+        if (valid && cda > 0.01f && cda < g_session_best_cda) {
+            g_session_best_cda = cda;
+            g_best_flash_end   = now_ms + 2000;
         }
-        if (p && p->valid && p->v_ground_ms > 0.5f) {
-            char spd[8];
-            snprintf(spd, sizeof(spd), "%d km/h", (int)(p->v_ground_ms * 3.6f));
-            int sw = (int)strlen(spd) * 6;
-            fb_str(CX - sw/2, CY + 52, spd, COL_TEXT, 1);
+
+        float pct = valid ? (cda - 0.18f) / 0.20f : 0.0f;
+        if (pct < 0.0f) pct = 0.0f;
+        if (pct > 1.0f) pct = 1.0f;
+
+        uint16_t arc_col = (pct < 0.33f) ? COL_TEAL
+                         : (pct < 0.67f) ? COL_AMBER : COL_RED;
+
+        fb_arc(CX, CY, 110, 12, -225.0f, 45.0f, COL_SURFACE);
+        if (valid && pct > 0.005f)
+            fb_arc(CX, CY, 110, 12, -225.0f, -225.0f + pct * 270.0f, arc_col);
+
+        // Session best — white tick on arc
+        if (g_session_best_cda < 9000.0f) {
+            float bp = (g_session_best_cda - 0.18f) / 0.20f;
+            if (bp < 0.0f) bp = 0.0f; if (bp > 1.0f) bp = 1.0f;
+            float ba = -225.0f + bp * 270.0f;
+            fb_arc(CX, CY, 110, 12, ba - 1.5f, ba + 1.5f, rgb(255,255,255));
+        }
+
+        fb_str(CX - 9, 10, "CdA", COL_MUTED, 1);
+
+        // Grade (hero)
+        const char *grade     = valid ? cda_grade(cda) : "--";
+        uint16_t    grade_col = valid ? arc_col : COL_MUTED;
+        int gw = (int)strlen(grade) * 6 * 4;
+        fb_str((FB_W - gw) / 2, CY - 40, grade, grade_col, 4);
+
+        // CdA value
+        if (valid) {
+            char buf[8];
+            snprintf(buf, sizeof(buf), "0.%03d", (int)(cda * 1000) % 1000);
+            int vw = (int)strlen(buf) * 12;
+            fb_str((FB_W - vw) / 2, CY + 8, buf, COL_TEXT, 2);
+            fb_str(CX - 6, CY + 26, "m2", COL_MUTED, 1);
+        } else {
+            fb_str(CX - 18, CY + 8, "---", COL_MUTED, 2);
+        }
+
+        // "NEW BEST" blink
+        if (now_ms < g_best_flash_end && (now_ms / 500) % 2 == 0) {
+            int nbw = (int)strlen("NEW BEST") * 6;
+            fb_str((FB_W - nbw) / 2, CY + 44, "NEW BEST", COL_TEAL, 1);
+        }
+
+        // Bottom info bar
+        int bby = FB_H - 34;
+        if (valid && p->v_ground_ms > 0.5f) {
+            char spd[6];
+            snprintf(spd, sizeof(spd), "%d", (int)(p->v_ground_ms * 3.6f));
+            fb_str(8, bby, spd, COL_TEXT, 2);
+            fb_str(8 + (int)strlen(spd) * 12, bby + 8, "km/h", COL_MUTED, 1);
+        }
+        if (s->pitot_valid && s->pitot_pa > 0.3f) {
+            float v_air = sqrtf(2.0f * s->pitot_pa / 1.225f) * 3.6f;
+            char wa[6];
+            snprintf(wa, sizeof(wa), "%d", (int)v_air);
+            int wx = CX - (int)strlen(wa) * 6;
+            fb_str(wx, bby, wa, COL_TEAL, 2);
+            fb_str(wx + (int)strlen(wa) * 12, bby + 8, "wind", COL_MUTED, 1);
         }
         if (s->power_w > 0) {
-            char pw[10];
-            snprintf(pw, sizeof(pw), "%dW", s->power_w);
-            fb_str(10, 28, pw, COL_AMBER, 2);
+            char pw[6];
+            snprintf(pw, sizeof(pw), "%d", s->power_w);
+            int px = FB_W - (int)strlen(pw) * 12 - 14;
+            fb_str(px, bby, pw, COL_AMBER, 2);
+            fb_str(px + (int)strlen(pw) * 12, bby + 8, "W", COL_MUTED, 1);
         }
+
+        // Status dots
         float bat = s->battery_pct / 100.0f;
-        if (bat > 0.02f) {
-            fb_arc(CX, CY, 115, 4,
-                   70.0f, 70.0f + bat * 40.0f,
+        if (bat > 0.02f)
+            fb_arc(CX, CY, 115, 4, 70.0f, 70.0f + bat * 40.0f,
                    bat > 0.25f ? COL_TEAL : COL_RED);
-        }
-        fb_circle(CX + 48, CY - 78, 5,
-                  s->pitot_valid ? COL_TEAL : COL_MUTED);
+        fb_circle(FB_W - 12, 12, 4, s->pitot_valid ? COL_TEAL : COL_MUTED);
         break;
     }
 
+    // ── Speed ─────────────────────────────────────────────────────────────────
+    case SCR_SPEED: {
+        fb_str(CX - 15, 10, "Speed", COL_MUTED, 1);
+
+        float spd_kmh = s->gps_valid      ? s->speed_ms * 3.6f
+                      : (p && p->valid)   ? p->v_ground_ms * 3.6f
+                      : 0.0f;
+        char spd_buf[6];
+        snprintf(spd_buf, sizeof(spd_buf), "%d", (int)spd_kmh);
+        int sw = (int)strlen(spd_buf) * 36;   // scale 6
+        fb_str((FB_W - sw) / 2, CY - 22, spd_buf, COL_TEXT, 6);
+
+        int km_w = 4 * 6;   // "km/h" scale 1
+        fb_str((FB_W - km_w) / 2, CY + 26, "km/h", COL_MUTED, 1);
+
+        if (s->pitot_valid && s->pitot_pa > 0.3f) {
+            float v_air   = sqrtf(2.0f * s->pitot_pa / 1.225f) * 3.6f;
+            float delta   = spd_kmh - v_air;
+            char  air[20], wind[20];
+            snprintf(air,  sizeof(air),  "Air: %d km/h",  (int)v_air);
+            snprintf(wind, sizeof(wind), "Wind: %+d km/h", (int)delta);
+            int aw = (int)strlen(air) * 6, ww = (int)strlen(wind) * 6;
+            fb_str((FB_W - aw) / 2, CY + 44, air,  COL_TEAL, 1);
+            uint16_t wcol = (delta >  2.0f) ? COL_RED
+                          : (delta < -2.0f) ? COL_TEAL : COL_MUTED;
+            fb_str((FB_W - ww) / 2, CY + 56, wind, wcol, 1);
+        }
+
+        if (s->hr_bpm > 0) {
+            char hr[6];
+            snprintf(hr, sizeof(hr), "%d", s->hr_bpm);
+            fb_str(FB_W - (int)strlen(hr) * 12 - 4, 10, hr, COL_RED, 2);
+            fb_str(FB_W - 18, 26, "bpm", COL_MUTED, 1);
+        }
+
+        if (s->power_w > 0) {
+            char pw[12];
+            snprintf(pw, sizeof(pw), "%d W", s->power_w);
+            int pw_w = (int)strlen(pw) * 12;
+            fb_str((FB_W - pw_w) / 2, FB_H - 30,
+                   pw, power_zone_col(s->power_w, g_rider_ftp_w), 2);
+        }
+        break;
+    }
+
+    // ── Power / Energy split ──────────────────────────────────────────────────
     case SCR_POWER: {
-        char buf[8];
-        snprintf(buf, sizeof(buf), "%d", s->power_w);
-        fb_str(CX - (int)strlen(buf)*9, CY - 54, buf, COL_AMBER, 3);
-        fb_str(CX + 16, CY - 36, "W", COL_AMBER, 2);
+        char buf[16];
+        uint16_t    zone_col  = power_zone_col(s->power_w, g_rider_ftp_w);
+        const char *zone_name = power_zone_name(s->power_w, g_rider_ftp_w);
+
+        snprintf(buf, sizeof(buf), "%d W", s->power_w);
+        int pw_w = (int)strlen(buf) * 18;   // scale 3
+        fb_str((FB_W - pw_w) / 2, 10, buf, zone_col, 3);
+
+        int znw = (int)strlen(zone_name) * 6;
+        fb_str((FB_W - znw) / 2, 38, zone_name, zone_col, 1);
+
+        if (g_rider_mass_kg > 0.0f && s->power_w > 0) {
+            snprintf(buf, sizeof(buf), "%.1f W/kg", s->power_w / g_rider_mass_kg);
+            int wkw = (int)strlen(buf) * 6;
+            fb_str((FB_W - wkw) / 2, 50, buf, COL_MUTED, 1);
+        }
+
         if (p && p->valid && s->power_w > 0) {
-            uint8_t pa = p->pct_aero;
+            uint8_t pa  = p->pct_aero;
             float   pr_f = (p->p_rolling_w / (float)s->power_w) * 100.0f;
-            uint8_t pr = (pr_f > 100.0f) ? 100 : (pr_f < 0.0f) ? 0 : (uint8_t)pr_f;
-            uint8_t po = (pa + pr < 100) ? (100 - pa - pr) : 0;
-            const int BH = 70, BY = CY + 10, BW = 22, GAP = 8;
-            int bx = CX - BW - GAP/2 - BW/2;
-            struct { uint8_t pct; uint16_t col; } bars[3] = {
-                {pa, COL_RED}, {pr, COL_TEAL}, {po, COL_MUTED}
+            uint8_t pr  = (pr_f > 100.0f) ? 100 : (pr_f < 0.0f) ? 0 : (uint8_t)pr_f;
+            uint8_t po  = (pa + pr < 100) ? (100 - pa - pr) : 0;
+
+            const int BH = 100, BY = 80, BW = 30, GAP = 14;
+            int bx = (FB_W - (3*BW + 2*GAP)) / 2;
+
+            struct { uint8_t pct; uint16_t col; const char *lbl; } bars[3] = {
+                {pa, COL_RED,   "Aero"},
+                {pr, COL_TEAL,  "Roll"},
+                {po, COL_MUTED, "Other"},
             };
             for (int b = 0; b < 3; b++) {
                 int filled = BH * bars[b].pct / 100;
-                for (int y=BY; y<BY+BH; y++)
-                    for (int x=bx; x<bx+BW; x++)
-                        if (x>=0&&x<FB_W&&y>=0&&y<FB_H) PX(x,y)=COL_SURFACE;
-                for (int y=BY+BH-filled; y<BY+BH; y++)
-                    for (int x=bx; x<bx+BW; x++)
-                        if (x>=0&&x<FB_W&&y>=0&&y<FB_H) PX(x,y)=bars[b].col;
+                for (int y = BY; y < BY + BH; y++)
+                    for (int x = bx; x < bx + BW; x++)
+                        if (x>=0&&x<FB_W&&y>=0&&y<FB_H) PX(x,y) = COL_SURFACE;
+                for (int y = BY + BH - filled; y < BY + BH; y++)
+                    for (int x = bx; x < bx + BW; x++)
+                        if (x>=0&&x<FB_W&&y>=0&&y<FB_H) PX(x,y) = bars[b].col;
+
+                int lw = (int)strlen(bars[b].lbl) * 6;
+                fb_str(bx + (BW - lw) / 2, BY - 14, bars[b].lbl, bars[b].col, 1);
+
+                snprintf(buf, sizeof(buf), "%d%%", bars[b].pct);
+                int buw = (int)strlen(buf) * 6;
+                fb_str(bx + (BW - buw) / 2, BY + BH + 6, buf, bars[b].col, 1);
+
                 bx += BW + GAP;
             }
-            fb_str(CX - 52, BY - 14, "Aero", COL_RED,  1);
-            fb_str(CX - 12, BY - 14, "Roll", COL_TEAL, 1);
-            fb_str(CX + 28, BY - 14, "Other", COL_MUTED, 1);
-            snprintf(buf, sizeof(buf), "%d%%", pa);
-            fb_str(CX - 52, BY + BH + 6, buf, COL_RED, 1);
-            snprintf(buf, sizeof(buf), "%d%%", pr);
-            fb_str(CX - 12, BY + BH + 6, buf, COL_TEAL, 1);
+        } else {
+            int dw = 3 * 12;
+            fb_str((FB_W - dw) / 2, CY, "---", COL_MUTED, 2);
         }
         break;
     }
 
+    // ── Status / Vitals 2×2 ───────────────────────────────────────────────────
     case SCR_STATUS: {
-    char buf[16];
+        char buf[20];
 
-    // Battery
-    fb_str(10, 10, "Battery", COL_MUTED, 1);
-    snprintf(buf, sizeof(buf), "%d%%", s->battery_pct);
-    fb_str(10, 20, buf, s->battery_pct > 25 ? COL_TEAL : COL_RED, 2);
+        // Grid dividers
+        fb_hline(0, FB_W - 1, 159, COL_SURFACE);
+        fb_hline(0, FB_W - 1, 160, COL_SURFACE);
+        for (int y = 0; y < FB_H; y++) {
+            if (y >= 0 && y < FB_H) { PX(119,y) = COL_SURFACE; PX(120,y) = COL_SURFACE; }
+        }
 
-    // Heart rate
-    fb_str(10, CY - 20, "HR", COL_MUTED, 1);
-    snprintf(buf, sizeof(buf), "%d bpm", s->hr_bpm > 0 ? s->hr_bpm : 0);
-    fb_str(10, CY - 10, buf, COL_RED, 2);
+        // TL — Battery
+        fb_str(10, 10, "Battery", COL_MUTED, 1);
+        uint16_t bat_col = s->battery_pct > 25 ? COL_TEAL : COL_RED;
+        snprintf(buf, sizeof(buf), "%d", s->battery_pct);
+        fb_str(10, 28, buf, bat_col, 4);
+        fb_str(10 + (int)strlen(buf) * 24, 42, "%", bat_col, 2);
+        {
+            int bat_bar = 80 * s->battery_pct / 100;
+            for (int y = 80; y < 90; y++) {
+                for (int x = 10; x < 90; x++) if (x<FB_W&&y<FB_H) PX(x,y) = COL_SURFACE;
+                for (int x = 10; x < 10 + bat_bar; x++) if (x<FB_W&&y<FB_H) PX(x,y) = bat_col;
+            }
+        }
 
-    // Cadence
-    fb_str(10, CY + 30, "Cadence", COL_MUTED, 1);
-    snprintf(buf, sizeof(buf), "%d rpm", s->cadence_rpm > 0 ? s->cadence_rpm : 0);
-    fb_str(10, CY + 40, buf, COL_AMBER, 2);
+        // TR — Heart Rate
+        fb_str(130, 10, "HR", COL_MUTED, 1);
+        uint16_t hr_col = s->hr_bpm > 0 ? COL_RED : COL_MUTED;
+        snprintf(buf, sizeof(buf), "%d", s->hr_bpm > 0 ? s->hr_bpm : 0);
+        fb_str(130, 28, buf, hr_col, 4);
+        fb_str(130, 62, "bpm", COL_MUTED, 1);
+        fb_circle(195, 105, 6, hr_col);
 
-    // GPS
-    uint16_t gps_col = (s->gps_fix >= 2) ? COL_TEAL
-                     : (s->gps_fix == 1) ? COL_AMBER
-                     :                      COL_RED;
-    const char *gps_str = (s->gps_fix >= 2) ? "GPS: fix"
-                        : (s->gps_fix == 1)  ? "GPS: searching"
-                        :                      "GPS: no signal";
-    fb_str(10, CY + 80, gps_str, gps_col, 1);
-    break;
-}
+        // BL — Cadence
+        fb_str(10, 172, "Cadence", COL_MUTED, 1);
+        uint16_t cad_col = s->cadence_rpm > 0 ? COL_AMBER : COL_MUTED;
+        snprintf(buf, sizeof(buf), "%d", s->cadence_rpm > 0 ? s->cadence_rpm : 0);
+        fb_str(10, 190, buf, cad_col, 4);
+        fb_str(10, 224, "rpm", COL_MUTED, 1);
+
+        // BR — ANT+ / speed
+        fb_str(130, 172, "ANT+", COL_MUTED, 1);
+        uint16_t ant_col = s->ant_valid ? COL_TEAL : COL_MUTED;
+        fb_str(130, 190, s->ant_valid ? "Active" : "No sig", ant_col, 2);
+        if (s->gps_valid && s->speed_ms > 0.1f) {
+            snprintf(buf, sizeof(buf), "%d km/h", (int)(s->speed_ms * 3.6f));
+            fb_str(130, 224, buf, COL_MUTED, 1);
+        }
+        fb_circle(195, 265, 6, ant_col);
+        break;
+    }
 
     default: break;
     }
@@ -585,11 +733,8 @@ switch (g_screen) {
 void display_next_screen(void)
 {
     screen_t n = (screen_t)((g_screen + 1) % SCR_COUNT);
-    if (n == SCR_PAIRING) n = SCR_CDA;  // skip pairing in manual cycle
+    if (n == SCR_PAIRING) n = SCR_CDA;
     g_screen = n;
 }
 
-void display_set_screen(screen_t scr)
-{
-    g_screen = scr;
-}
+void display_set_screen(screen_t scr) { g_screen = scr; }
