@@ -12,16 +12,21 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
-      - name: Build with ESP-IDF
-        uses: espressif/esp-idf-ci-action@v1
-        with:
-          esp_idf_version: v6.0.1
-          target: esp32s3
-          path: '.'
-          command: idf.py build
+      - name: Install ESP-IDF
+        run: |
+          sudo apt-get install -y git wget flex bison gperf python3 python3-pip \
+            python3-venv cmake ninja-build ccache libffi-dev libssl-dev dfu-util \
+            libusb-1.0-0
+          git clone --branch v5.4.1 --depth 1 --recursive \
+            https://github.com/espressif/esp-idf.git /opt/esp-idf
+          /opt/esp-idf/install.sh esp32s3
+
+      - name: Build firmware
+        run: |
+          . /opt/esp-idf/export.sh
+          idf.py set-target esp32s3
+          idf.py build
 
       - name: Rename binary
         run: |
