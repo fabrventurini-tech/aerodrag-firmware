@@ -33,7 +33,7 @@
 
 // ── Pitot sensor SDP810 (I2C1 — separate bus, external wiring) ───────────────
 #define PIN_PITOT_SDA    15    // available on header
-#define PIN_PITOT_SCL    16    // available on header (GPIO18 used by MOSFET2)
+#define PIN_PITOT_SCL    18    // hardware wiring on board header
 #define PITOT_I2C_PORT  I2C_NUM_1
 #define PITOT_I2C_ADDR  0x25   // SDP810-500Pa default address
 
