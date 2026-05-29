@@ -6,5 +6,4 @@ idf_component_register(
     REQUIRES
         bt
         freertos
-        esp_common
 )
