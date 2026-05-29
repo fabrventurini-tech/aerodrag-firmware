@@ -50,6 +50,11 @@ static const ble_uuid128_t CHR_OTA_URL = BLE_UUID128_INIT(
     0xfb, 0x34, 0x9b, 0x5f, 0x80, 0x00, 0x00, 0x80,
     0x00, 0x10, 0x00, 0x00, 0x07, 0xaa, 0x00, 0x00);
 
+// BATTERY (0x08aa): percentuale batteria [uint8 0-100] — NOTIFY only, ~0.1 Hz
+static const ble_uuid128_t CHR_BATTERY = BLE_UUID128_INIT(
+    0xfb, 0x34, 0x9b, 0x5f, 0x80, 0x00, 0x00, 0x80,
+    0x00, 0x10, 0x00, 0x00, 0x08, 0xaa, 0x00, 0x00);
+
 static uint16_t g_chr_identity_h = 0;
 static uint16_t g_chr_version_h  = 0;
 static uint16_t g_chr_ota_h      = 0;
@@ -60,28 +65,33 @@ static notify_slot_t g_slot_pitot = {0};
 static notify_slot_t g_slot_imu   = {0};
 static notify_slot_t g_slot_env   = {0};
 static notify_slot_t g_slot_ant   = {0};
+static notify_slot_t g_slot_bat   = {0};
 
 static struct ble_npl_callout g_callout_pitot;
 static struct ble_npl_callout g_callout_imu;
 static struct ble_npl_callout g_callout_env;
 static struct ble_npl_callout g_callout_ant;
+static struct ble_npl_callout g_callout_bat;
 static struct ble_npl_mutex   g_notify_mutex;
 
 static void callout_pitot(struct ble_npl_event *ev);
 static void callout_imu  (struct ble_npl_event *ev);
 static void callout_env  (struct ble_npl_event *ev);
 static void callout_ant  (struct ble_npl_event *ev);
+static void callout_bat  (struct ble_npl_event *ev);
 
 // ─── BLE state ─────────────────────────────────────────────────────────────────────────────────────
 static uint16_t g_conn_handle  = BLE_HS_CONN_HANDLE_NONE;
-static uint16_t g_chr_pitot_h  = 0;
-static uint16_t g_chr_imu_h    = 0;
-static uint16_t g_chr_env_h    = 0;
-static uint16_t g_chr_ant_h    = 0;
-static bool     g_notify_pitot = false;
-static bool     g_notify_imu   = false;
-static bool     g_notify_env   = false;
-static bool     g_notify_ant   = false;
+static uint16_t g_chr_pitot_h   = 0;
+static uint16_t g_chr_imu_h     = 0;
+static uint16_t g_chr_env_h     = 0;
+static uint16_t g_chr_ant_h     = 0;
+static uint16_t g_chr_battery_h = 0;
+static bool     g_notify_pitot   = false;
+static bool     g_notify_imu     = false;
+static bool     g_notify_env     = false;
+static bool     g_notify_ant     = false;
+static bool     g_notify_battery = false;
 
 static const char *DEVICE_NAME = "AeroDrag Pro";
 
@@ -126,7 +136,7 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
         break;
     case BLE_GAP_EVENT_DISCONNECT:
         g_conn_handle  = BLE_HS_CONN_HANDLE_NONE;
-        g_notify_pitot = g_notify_imu = g_notify_env = g_notify_ant = false;
+        g_notify_pitot = g_notify_imu = g_notify_env = g_notify_ant = g_notify_battery = false;
         ble_advertise();
         break;
     case BLE_GAP_EVENT_SUBSCRIBE:
@@ -138,6 +148,8 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
             g_notify_env = event->subscribe.cur_notify;
         else if (event->subscribe.attr_handle == g_chr_ant_h)
             g_notify_ant = event->subscribe.cur_notify;
+        else if (event->subscribe.attr_handle == g_chr_battery_h)
+            g_notify_battery = event->subscribe.cur_notify;
         break;
     default:
         break;
@@ -281,6 +293,12 @@ static const struct ble_gatt_svc_def GATT_SERVICES[] = {
                 .val_handle = &g_chr_ota_h,
                 .flags      = BLE_GATT_CHR_F_WRITE,
             },
+            {
+                .uuid       = &CHR_BATTERY.u,
+                .access_cb  = chr_access_cb,   /* never called for NOTIFY-only */
+                .val_handle = &g_chr_battery_h,
+                .flags      = BLE_GATT_CHR_F_NOTIFY,
+            },
             { 0 }
         }
     },
@@ -323,6 +341,7 @@ esp_err_t ble_server_init(aerodrag_sensors_t *sensors, SemaphoreHandle_t mutex)
     ble_npl_callout_init(&g_callout_imu,   eq, callout_imu,   NULL);
     ble_npl_callout_init(&g_callout_env,   eq, callout_env,   NULL);
     ble_npl_callout_init(&g_callout_ant,   eq, callout_ant,   NULL);
+    ble_npl_callout_init(&g_callout_bat,   eq, callout_bat,   NULL);
 
     nimble_port_freertos_init(nimble_host_task);
     return ESP_OK;
@@ -342,10 +361,11 @@ static void callout_##name(struct ble_npl_event *ev) {                 \
     if (om) ble_gattc_notify_custom(g_conn_handle, handle_var, om);    \
 }
 
-MAKE_CALLOUT_FN(pitot, g_slot_pitot, g_chr_pitot_h, g_notify_pitot)
-MAKE_CALLOUT_FN(imu,   g_slot_imu,   g_chr_imu_h,   g_notify_imu)
-MAKE_CALLOUT_FN(env,   g_slot_env,   g_chr_env_h,   g_notify_env)
-MAKE_CALLOUT_FN(ant,   g_slot_ant,   g_chr_ant_h,   g_notify_ant)
+MAKE_CALLOUT_FN(pitot, g_slot_pitot, g_chr_pitot_h,   g_notify_pitot)
+MAKE_CALLOUT_FN(imu,   g_slot_imu,   g_chr_imu_h,     g_notify_imu)
+MAKE_CALLOUT_FN(env,   g_slot_env,   g_chr_env_h,     g_notify_env)
+MAKE_CALLOUT_FN(ant,   g_slot_ant,   g_chr_ant_h,     g_notify_ant)
+MAKE_CALLOUT_FN(bat,   g_slot_bat,   g_chr_battery_h, g_notify_battery)
 
 static void fill_and_schedule(notify_slot_t *slot,
                                struct ble_npl_callout *callout,
@@ -386,6 +406,12 @@ void ble_notify_ant(uint16_t power, uint8_t cad, uint8_t hr)
     if (!g_notify_ant) return;
     uint8_t v[4]; memcpy(v, &power, 2); v[2] = cad; v[3] = hr;
     fill_and_schedule(&g_slot_ant, &g_callout_ant, v, sizeof(v));
+}
+
+void ble_notify_battery(uint8_t pct)
+{
+    if (!g_notify_battery) return;
+    fill_and_schedule(&g_slot_bat, &g_callout_bat, &pct, sizeof(pct));
 }
 
 bool ble_is_connected(void)
