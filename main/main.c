@@ -205,10 +205,6 @@ static void task_pitot_imu(void *arg)
         }
 
         if (phy.valid) {
-            if (g_session_start_us < 0) {
-                g_session_start_us = esp_timer_get_time();
-                g_lap_start_us     = g_session_start_us;
-            }
             if (g_cda_smooth < 0.01f) g_cda_smooth = phy.CdA;
             g_cda_smooth = ema_update(g_cda_smooth, phy.CdA, EMA_ALPHA_30S);
             phy.CdA = g_cda_smooth;
@@ -330,6 +326,8 @@ static void task_housekeeping(void *arg)
 static volatile int64_t g_btn_press_us       = 0;
 static volatile bool    g_btn_long_press      = false;
 static volatile bool    g_btn_very_long_press = false;
+static volatile int64_t g_btn_last_tap_us     = 0;
+static volatile bool    g_btn_double_click    = false;
 
 static void IRAM_ATTR btn_isr(void *arg)
 {
@@ -345,6 +343,12 @@ static void IRAM_ATTR btn_isr(void *arg)
             g_btn_long_press = true;
         } else if (held_ms >= 50) {
             g_screen_next = true;
+            if (g_btn_last_tap_us > 0 && (now - g_btn_last_tap_us) < 400000LL) {
+                g_btn_double_click = true;
+                g_btn_last_tap_us  = 0;
+            } else {
+                g_btn_last_tap_us = now;
+            }
         }
     }
 }
@@ -468,6 +472,16 @@ void app_main(void)
     g_state = STATE_IDLE;
 
     while (1) {
+        if (g_btn_double_click) {
+            g_btn_double_click = false;
+            int64_t now = esp_timer_get_time();
+            g_session_start_us = now;
+            g_lap_start_us     = now;
+            g_current_lap      = 1;
+            display_set_screen(SCR_TIMER);
+            display_show_toast("PARTE", 2000);
+            ESP_LOGI(TAG, "Sessione avviata manualmente");
+        }
         if (g_btn_long_press && !g_btn_very_long_press) {
             g_btn_long_press = false;
             do_calibration();

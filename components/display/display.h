@@ -305,6 +305,7 @@ static void fb_char(int x, int y, char c, uint16_t col, int scale)
     else if (c=='%') idx = 19;
     else if (c==':') idx = 26;
     else if (c=='H') idx = 27;
+    else if (c=='I') idx = 12;
     else if (c=='O') idx = 28;
     else if (c=='P') idx = 29;
     else if (c=='R') idx = 30;
