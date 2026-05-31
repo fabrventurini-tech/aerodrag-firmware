@@ -624,6 +624,12 @@ void display_show_toast(const char *msg, uint32_t duration_ms)
     g_toast_end_ms = (uint32_t)(esp_timer_get_time() / 1000LL) + duration_ms;
 }
 
+void display_clear_toast(void)
+{
+    g_toast_msg[0] = '\0';
+    g_toast_end_ms  = 0;
+}
+
 void display_set_connection_status(bool ble, bool wifi)
 {
     g_ble_connected = ble;

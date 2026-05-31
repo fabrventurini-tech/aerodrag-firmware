@@ -418,6 +418,7 @@ static void do_calibration(void)
 {
     ESP_LOGI(TAG, "Calibration: averaging Pitot over 5 seconds...");
     g_state = STATE_CALIBRATING;
+    display_show_toast("CALIBRATING", 30000);
 
     float sum = 0;
     int   n   = 0;
@@ -437,6 +438,7 @@ static void do_calibration(void)
         ESP_LOGI(TAG, "Pitot zero offset set to %.4f Pa (avg of %d samples)",
                  g_cal.pitot_offset_pa, n);
     }
+    display_clear_toast();
     g_state = STATE_CONNECTED;
 }
 
