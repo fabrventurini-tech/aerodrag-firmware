@@ -51,6 +51,9 @@
 // ── Buttons ───────────────────────────────────────────────────────────────────
 #define PIN_BTN_BOOT      0    // BOOT button (GPIO0, active low)
 #define PIN_BTN_USER      0    // use BOOT for calibration / screen cycle
+// Optional external buttons (solder to header pads, internal pull-up, active low)
+#define PIN_BTN_SCREEN   17    // cycle screens         (= PIN_MOSFET1 pad)
+#define PIN_BTN_LAP      18    // new lap / start+reset (= PIN_MOSFET2 pad)
 
 // ── MOSFET pads (optional solder points) ─────────────────────────────────────
 #define PIN_MOSFET1      17    // free GPIO on header
