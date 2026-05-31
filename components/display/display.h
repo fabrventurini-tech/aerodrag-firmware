@@ -282,6 +282,7 @@ static const uint8_t FONT5X7[][5] = {
     {0x7F,0x09,0x09,0x09,0x06}, // 'P'  index 29
     {0x7F,0x09,0x19,0x29,0x46}, // 'R'  index 30
     {0x01,0x01,0x7F,0x01,0x01}, // 'T'  index 31
+    {0x7F,0x40,0x40,0x40,0x40}, // 'L'  index 32
 };
 #define FONT_IDX_DOT   10
 #define FONT_IDX_W     11
@@ -308,6 +309,7 @@ static void fb_char(int x, int y, char c, uint16_t col, int scale)
     else if (c=='P') idx = 29;
     else if (c=='R') idx = 30;
     else if (c=='T') idx = 31;
+    else if (c=='L') idx = 32;
     if (idx<0) return;
     for (int row=0; row<7; row++)
     for (int col_b=0; col_b<5; col_b++) {
@@ -349,13 +351,45 @@ void display_set_pairing_id(const char *id)
 static char              g_toast_msg[40]  = {0};
 static volatile uint32_t g_toast_end_ms   = 0;
 
+// ─── Connection + timer state (set from main task) ───────────────────────────
+static bool     g_ble_connected      = false;
+static bool     g_wifi_ready         = false;
+static uint32_t g_session_elapsed_s  = 0;
+static uint32_t g_lap_elapsed_s      = 0;
+static uint8_t  g_lap_num_display    = 1;
+
 // ─── Screen state ─────────────────────────────────────────────────────────────
-typedef enum { SCR_PAIRING=0, SCR_CDA, SCR_POWER, SCR_STATUS, SCR_COUNT } screen_t;
+typedef enum { SCR_PAIRING=0, SCR_CDA, SCR_TIMER, SCR_POWER, SCR_STATUS, SCR_COUNT } screen_t;
 static screen_t g_screen = SCR_PAIRING;
 
 screen_t display_get_screen(void)
 {
     return g_screen;
+}
+
+// ─── Status dots (4×, bottom-right): WiFi BLE ANT+ Pitot ─────────────────────
+static void render_status_dots(const aerodrag_sensors_t *s)
+{
+    struct { int x; uint16_t col; char lbl; } dots[4] = {
+        { FB_W - 35, g_wifi_ready    ? COL_TEAL : COL_MUTED, 'W' },
+        { FB_W - 26, g_ble_connected ? COL_TEAL : COL_MUTED, 'B' },
+        { FB_W - 17, s->ant_valid    ? COL_TEAL : COL_MUTED, 'A' },
+        { FB_W -  8, s->pitot_valid  ? COL_TEAL : COL_MUTED, 'P' },
+    };
+    for (int i = 0; i < 4; i++) {
+        fb_char(dots[i].x - 2, FB_H - 19, dots[i].lbl, COL_MUTED, 1);
+        fb_circle(dots[i].x,   FB_H -  8, 3, dots[i].col);
+    }
+}
+
+// ─── MM:SS helper ─────────────────────────────────────────────────────────────
+static void fb_time(int x, int y, uint32_t secs, uint16_t col, int scale)
+{
+    char buf[6];
+    uint32_t mm = secs / 60;
+    if (mm > 99) mm = 99;
+    snprintf(buf, sizeof(buf), "%02d:%02d", mm, secs % 60);
+    fb_str(x, y, buf, col, scale);
 }
 
 // ─── Render ───────────────────────────────────────────────────────────────────
@@ -366,7 +400,7 @@ void display_render(const aerodrag_sensors_t *s, const aerodrag_physics_t *p)
 
     fb_fill(COL_BG);
 
-    if (g_screen != SCR_PAIRING)
+    if (g_screen != SCR_PAIRING && g_screen != SCR_TIMER)
         fb_ring(CX, CY, 116, 3, COL_SURFACE);
 
 switch (g_screen) {
@@ -467,8 +501,30 @@ switch (g_screen) {
                    70.0f, 70.0f + bat * 40.0f,
                    bat > 0.25f ? COL_TEAL : COL_RED);
         }
-        fb_circle(CX + 48, CY - 78, 5,
-                  s->pitot_valid ? COL_TEAL : COL_MUTED);
+        break;
+    }
+
+    case SCR_TIMER: {
+        // ── Lap number ────────────────────────────────────────────────────────
+        fb_str((FB_W - 36) / 2, 18, "LAP", COL_MUTED, 2);
+        {
+            char nbuf[4];
+            snprintf(nbuf, sizeof(nbuf), "%d", g_lap_num_display);
+            int nw = (int)strlen(nbuf) * 30;   // scale 5
+            fb_str((FB_W - nw) / 2, 40, nbuf, COL_TEAL, 5);
+        }
+        // ── Lap time (center, large) ──────────────────────────────────────────
+        {
+            uint16_t lap_col = (g_lap_elapsed_s < 60) ? COL_TEAL : COL_AMBER;
+            fb_time((FB_W - 5*24) / 2, 95, g_lap_elapsed_s, lap_col, 4);
+        }
+        fb_str((FB_W - 18) / 2, 130, "LAP", COL_MUTED, 1);
+        // ── Divider ───────────────────────────────────────────────────────────
+        fb_hline(30, FB_W - 30, 150, COL_SURFACE);
+        fb_hline(30, FB_W - 30, 151, COL_SURFACE);
+        // ── Session total (bottom half) ───────────────────────────────────────
+        fb_str((FB_W - 18) / 2, 162, "TOT", COL_MUTED, 1);
+        fb_time((FB_W - 5*18) / 2, 174, g_session_elapsed_s, COL_TEXT, 3);
         break;
     }
 
@@ -529,6 +585,9 @@ switch (g_screen) {
     default: break;
     }
 
+    if (g_screen != SCR_PAIRING)
+        render_status_dots(s);
+
     // ── Toast overlay ─────────────────────────────────────────────────────────
     {
         uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000LL);
@@ -554,6 +613,19 @@ void display_show_toast(const char *msg, uint32_t duration_ms)
 {
     strlcpy(g_toast_msg, msg, sizeof(g_toast_msg));
     g_toast_end_ms = (uint32_t)(esp_timer_get_time() / 1000LL) + duration_ms;
+}
+
+void display_set_connection_status(bool ble, bool wifi)
+{
+    g_ble_connected = ble;
+    g_wifi_ready    = wifi;
+}
+
+void display_set_timers(uint32_t session_s, uint32_t lap_s, uint8_t lap_num)
+{
+    g_session_elapsed_s = session_s;
+    g_lap_elapsed_s     = lap_s;
+    g_lap_num_display   = lap_num;
 }
 
 void display_next_screen(void)

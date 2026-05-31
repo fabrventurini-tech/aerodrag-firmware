@@ -80,7 +80,9 @@ uint8_t g_current_lap = 1;
 
 // Fix H3: inizializzato in app_main (non a 0) per evitare che il watchdog
 // deep-sleep scatti 10 minuti dopo il boot prima di qualsiasi sessione.
-static int64_t g_last_activity_us = 0;
+static int64_t g_last_activity_us  = 0;
+static volatile int64_t g_session_start_us = -1;
+static volatile int64_t g_lap_start_us     = -1;
 #define SLEEP_TIMEOUT_US  (10LL * 60 * 1000 * 1000)
 
 #define SENSORS_LOCK()    xSemaphoreTake(g_sensors_mutex, portMAX_DELAY)
@@ -197,11 +199,16 @@ static void task_pitot_imu(void *arg)
         bool lap_pending_this_cycle = false;
         if (lap_now) {
             g_current_lap++;
+            g_lap_start_us = esp_timer_get_time();
             lap_pending_this_cycle = true;
             ESP_LOGI("lap", "LAP event ANT+ → lap %d", g_current_lap);
         }
 
         if (phy.valid) {
+            if (g_session_start_us < 0) {
+                g_session_start_us = esp_timer_get_time();
+                g_lap_start_us     = g_session_start_us;
+            }
             if (g_cda_smooth < 0.01f) g_cda_smooth = phy.CdA;
             g_cda_smooth = ema_update(g_cda_smooth, phy.CdA, EMA_ALPHA_30S);
             phy.CdA = g_cda_smooth;
@@ -222,6 +229,7 @@ static void task_pitot_imu(void *arg)
             g_coach_lap_cmd = false;
             if (!lap_pending_this_cycle) {
                 g_current_lap++;
+                g_lap_start_us = esp_timer_get_time();
                 lap_pending_this_cycle = true;
                 ESP_LOGI(TAG, "LAP da coach WiFi → lap %d", g_current_lap);
             } else {
@@ -275,6 +283,14 @@ static void task_display(void *arg)
         aerodrag_physics_t p_copy = g_physics;
         SENSORS_UNLOCK();
 
+        {
+            int64_t now_us = esp_timer_get_time();
+            int64_t s0 = g_session_start_us, l0 = g_lap_start_us;
+            uint32_t sess_s = (s0 > 0) ? (uint32_t)((now_us - s0) / 1000000LL) : 0;
+            uint32_t lap_s  = (l0 > 0) ? (uint32_t)((now_us - l0) / 1000000LL) : 0;
+            display_set_timers(sess_s, lap_s, g_current_lap);
+            display_set_connection_status(ble_is_connected(), coach_is_ready());
+        }
         display_render(&s_copy, &p_copy);
     }
 }
