@@ -479,7 +479,7 @@ void app_main(void)
             g_lap_start_us     = now;
             g_current_lap      = 1;
             display_set_screen(SCR_TIMER);
-            display_show_toast("PARTE", 2000);
+            display_show_toast("LET'S GO!", 2000);
             ESP_LOGI(TAG, "Sessione avviata manualmente");
         }
         if (g_btn_long_press && !g_btn_very_long_press) {

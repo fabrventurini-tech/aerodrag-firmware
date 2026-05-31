@@ -283,6 +283,10 @@ static const uint8_t FONT5X7[][5] = {
     {0x7F,0x09,0x19,0x29,0x46}, // 'R'  index 30
     {0x01,0x01,0x7F,0x01,0x01}, // 'T'  index 31
     {0x7F,0x40,0x40,0x40,0x40}, // 'L'  index 32
+    {0x3E,0x41,0x49,0x49,0x7A}, // 'G'  index 33
+    {0x46,0x49,0x49,0x49,0x31}, // 'S'  index 34
+    {0x00,0x05,0x03,0x00,0x00}, // '\'' index 35
+    {0x00,0x00,0x5F,0x00,0x00}, // '!'  index 36
 };
 #define FONT_IDX_DOT   10
 #define FONT_IDX_W     11
@@ -311,6 +315,10 @@ static void fb_char(int x, int y, char c, uint16_t col, int scale)
     else if (c=='R') idx = 30;
     else if (c=='T') idx = 31;
     else if (c=='L') idx = 32;
+    else if (c=='G') idx = 33;
+    else if (c=='S') idx = 34;
+    else if (c=='\'') idx = 35;
+    else if (c=='!') idx = 36;
     if (idx<0) return;
     for (int row=0; row<7; row++)
     for (int col_b=0; col_b<5; col_b++) {
