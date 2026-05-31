@@ -64,6 +64,7 @@ static coach_config_t                g_cfg     = {0};
 static esp_websocket_client_handle_t g_ws      = NULL;
 static EventGroupHandle_t            g_wifi_eg = NULL;
 static bool                          g_ws_ready = false;
+static bool                          g_wifi_hw_started = false;
 
 volatile bool    g_coach_start_cmd    = false;
 volatile bool    g_coach_stop_cmd     = false;
@@ -279,6 +280,7 @@ esp_err_t coach_init(void)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
     ESP_ERROR_CHECK(esp_wifi_start());
+    g_wifi_hw_started = true;
 
     EventBits_t bits = xEventGroupWaitBits(g_wifi_eg,
         WIFI_CONNECTED_BIT, pdFALSE, pdFALSE, pdMS_TO_TICKS(15000));
@@ -308,6 +310,101 @@ void coach_cycle_mode(void)
     const char *labels[] = {"OFF", "COACH DIRECT", "COACH CO-OP"};
     ESP_LOGI(COACH_TAG, "→ %s", labels[g_cfg.mode]);
     g_coach_mode_display = (uint8_t)g_cfg.mode + 1;
+}
+
+static void _coach_connect_task(void *arg)
+{
+    if (g_wifi_hw_started) {
+        if (!g_ws) {
+            char url[80];
+            snprintf(url, sizeof(url), "ws://%s:%d/coach", g_cfg.host, g_cfg.port);
+            esp_websocket_client_config_t wsc = {
+                .uri                  = url,
+                .reconnect_timeout_ms = 3000,
+                .network_timeout_ms   = 5000,
+            };
+            g_ws = esp_websocket_client_init(&wsc);
+            esp_websocket_register_events(g_ws, WEBSOCKET_EVENT_ANY, _ws_handler, NULL);
+            esp_websocket_client_start(g_ws);
+        }
+        vTaskDelete(NULL);
+        return;
+    }
+
+    if (!g_wifi_eg) g_wifi_eg = xEventGroupCreate();
+
+    esp_err_t r = esp_netif_init();
+    if (r != ESP_OK && r != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(COACH_TAG, "netif_init: %d", r);
+        vTaskDelete(NULL);
+        return;
+    }
+    esp_netif_create_default_wifi_sta();
+
+    r = esp_event_loop_create_default();
+    if (r != ESP_OK && r != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(COACH_TAG, "event_loop: %d", r);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    wifi_init_config_t wifi_init = WIFI_INIT_CONFIG_DEFAULT();
+    if (esp_wifi_init(&wifi_init) != ESP_OK) {
+        ESP_LOGE(COACH_TAG, "esp_wifi_init failed");
+        vTaskDelete(NULL);
+        return;
+    }
+    esp_event_handler_instance_register(WIFI_EVENT,  ESP_EVENT_ANY_ID,    _wifi_handler, NULL, NULL);
+    esp_event_handler_instance_register(IP_EVENT,    IP_EVENT_STA_GOT_IP, _wifi_handler, NULL, NULL);
+
+    wifi_config_t wc = {0};
+    strlcpy((char*)wc.sta.ssid,     g_cfg.ssid, sizeof(wc.sta.ssid));
+    strlcpy((char*)wc.sta.password, g_cfg.pass, sizeof(wc.sta.password));
+    wc.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+
+    esp_wifi_set_mode(WIFI_MODE_STA);
+    esp_wifi_set_config(WIFI_IF_STA, &wc);
+    esp_wifi_start();
+    g_wifi_hw_started = true;
+
+    EventBits_t bits = xEventGroupWaitBits(g_wifi_eg,
+        WIFI_CONNECTED_BIT, pdFALSE, pdFALSE, pdMS_TO_TICKS(15000));
+
+    if (!(bits & WIFI_CONNECTED_BIT)) {
+        ESP_LOGW(COACH_TAG, "Timeout WiFi — fallback BLE");
+        esp_wifi_stop();
+        g_wifi_hw_started = false;
+        vTaskDelete(NULL);
+        return;
+    }
+
+    char url[80];
+    snprintf(url, sizeof(url), "ws://%s:%d/coach", g_cfg.host, g_cfg.port);
+    esp_websocket_client_config_t wsc = {
+        .uri                  = url,
+        .reconnect_timeout_ms = 3000,
+        .network_timeout_ms   = 5000,
+    };
+    g_ws = esp_websocket_client_init(&wsc);
+    esp_websocket_register_events(g_ws, WEBSOCKET_EVENT_ANY, _ws_handler, NULL);
+    esp_websocket_client_start(g_ws);
+    vTaskDelete(NULL);
+}
+
+esp_err_t coach_apply_mode(void)
+{
+    coach_config_load(&g_cfg);
+    if (g_cfg.mode == COACH_MODE_OFF) {
+        if (g_ws) {
+            esp_websocket_client_stop(g_ws);
+            esp_websocket_client_destroy(g_ws);
+            g_ws = NULL;
+        }
+        g_ws_ready = false;
+        return ESP_OK;
+    }
+    xTaskCreate(_coach_connect_task, "coach_conn", 4096, NULL, 3, NULL);
+    return ESP_OK;
 }
 
 uint8_t          coach_get_lap(void)    { return g_current_lap; }

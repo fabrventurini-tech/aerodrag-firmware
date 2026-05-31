@@ -277,6 +277,11 @@ static const uint8_t FONT5X7[][5] = {
     {0x7F,0x49,0x49,0x49,0x41}, // 'E'  index 24
     {0x7F,0x09,0x09,0x09,0x01}, // 'F'  index 25
     {0x00,0x36,0x36,0x00,0x00}, // ':'  index 26
+    {0x7F,0x08,0x08,0x08,0x7F}, // 'H'  index 27
+    {0x3E,0x41,0x41,0x41,0x3E}, // 'O'  index 28
+    {0x7F,0x09,0x09,0x09,0x06}, // 'P'  index 29
+    {0x7F,0x09,0x19,0x29,0x46}, // 'R'  index 30
+    {0x01,0x01,0x7F,0x01,0x01}, // 'T'  index 31
 };
 #define FONT_IDX_DOT   10
 #define FONT_IDX_W     11
@@ -298,6 +303,11 @@ static void fb_char(int x, int y, char c, uint16_t col, int scale)
     else if (c=='h') idx = 18;
     else if (c=='%') idx = 19;
     else if (c==':') idx = 26;
+    else if (c=='H') idx = 27;
+    else if (c=='O') idx = 28;
+    else if (c=='P') idx = 29;
+    else if (c=='R') idx = 30;
+    else if (c=='T') idx = 31;
     if (idx<0) return;
     for (int row=0; row<7; row++)
     for (int col_b=0; col_b<5; col_b++) {
@@ -334,6 +344,10 @@ void display_set_pairing_id(const char *id)
                                        qrcodegen_Ecc_LOW, 1, 5,
                                        qrcodegen_Mask_AUTO, true);
 }
+
+// ─── Toast notification ───────────────────────────────────────────────────────
+static char              g_toast_msg[40]  = {0};
+static volatile uint32_t g_toast_end_ms   = 0;
 
 // ─── Screen state ─────────────────────────────────────────────────────────────
 typedef enum { SCR_PAIRING=0, SCR_CDA, SCR_POWER, SCR_STATUS, SCR_COUNT } screen_t;
@@ -514,7 +528,32 @@ switch (g_screen) {
 
     default: break;
     }
+
+    // ── Toast overlay ─────────────────────────────────────────────────────────
+    {
+        uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000LL);
+        if (g_toast_end_ms > now_ms && g_toast_msg[0]) {
+            int msg_w = (int)strlen(g_toast_msg) * 12;
+            int box_w = msg_w + 24, box_h = 30;
+            int bx = (FB_W - box_w) / 2, by = (FB_H - box_h) / 2;
+            for (int yy = by - 2; yy < by + box_h + 2; yy++)
+                for (int xx = bx - 2; xx < bx + box_w + 2; xx++)
+                    if (xx >= 0 && xx < FB_W && yy >= 0 && yy < FB_H)
+                        PX(xx, yy) = COL_TEAL;
+            for (int yy = by; yy < by + box_h; yy++)
+                for (int xx = bx; xx < bx + box_w; xx++)
+                    if (xx >= 0 && xx < FB_W && yy >= 0 && yy < FB_H)
+                        PX(xx, yy) = COL_BG;
+            fb_str((FB_W - msg_w) / 2, by + 8, g_toast_msg, COL_TEAL, 2);
+        }
+    }
     display_flush();
+}
+
+void display_show_toast(const char *msg, uint32_t duration_ms)
+{
+    strlcpy(g_toast_msg, msg, sizeof(g_toast_msg));
+    g_toast_end_ms = (uint32_t)(esp_timer_get_time() / 1000LL) + duration_ms;
 }
 
 void display_next_screen(void)

@@ -460,6 +460,11 @@ void app_main(void)
             g_btn_very_long_press = false;
             g_btn_long_press      = false;
             coach_cycle_mode();
+            {
+                const char *labels[] = {"WIFI OFF", "COACH DIRECT", "CO-OP WIFI"};
+                display_show_toast(labels[coach_get_mode()], 3000);
+            }
+            coach_apply_mode();
         }
         if (g_state == STATE_LOW_BATTERY) {
             ESP_LOGW(TAG, "Shutting down — battery critical");
