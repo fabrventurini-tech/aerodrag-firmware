@@ -207,6 +207,16 @@ static void fb_circle(int cx, int cy, int r, uint16_t col)
     }
 }
 
+static void fb_ring(int cx, int cy, int r, int w, uint16_t col)
+{
+    int ro2 = r*r, ri2 = (r-w)*(r-w);
+    for (int y = cy-r; y <= cy+r; y++)
+    for (int x = cx-r; x <= cx+r; x++) {
+        if (x<0||x>=FB_W||y<0||y>=FB_H) continue;
+        int d2 = (x-cx)*(x-cx)+(y-cy)*(y-cy);
+        if (d2 <= ro2 && d2 >= ri2) PX(x,y) = col;
+    }
+}
 
 static void fb_arc(int cx, int cy, int r, int w,
                    float start_deg, float end_deg, uint16_t col)
@@ -231,117 +241,93 @@ static void fb_hline(int x0, int x1, int y, uint16_t col)
     for (int x=x0; x<=x1; x++) if (x>=0&&x<FB_W) PX(x,y)=col;
 }
 
+__attribute__((unused))
+static void fb_vline(int x, int y0, int y1, uint16_t col)
+{
+    if (x<0||x>=FB_W) return;
+    if (y0>y1) { int t=y0; y0=y1; y1=t; }
+    for (int y=y0; y<=y1; y++) if (y>=0&&y<FB_H) PX(x,y)=col;
+}
 
-// ─── 5×7 pixel font — full ASCII printable (0x20–0x7E) ──────────────────────
+// ─── 5×7 pixel font ──────────────────────────────────────────────────────────
 static const uint8_t FONT5X7[][5] = {
-    {0x00,0x00,0x00,0x00,0x00}, // ' '
-    {0x00,0x00,0x5F,0x00,0x00}, // '!'
-    {0x00,0x07,0x00,0x07,0x00}, // '"'
-    {0x14,0x7F,0x14,0x7F,0x14}, // '#'
-    {0x24,0x2A,0x7F,0x2A,0x12}, // '$'
-    {0x23,0x13,0x08,0x64,0x62}, // '%'
-    {0x36,0x49,0x55,0x22,0x50}, // '&'
-    {0x00,0x05,0x03,0x00,0x00}, // '\''
-    {0x00,0x1C,0x22,0x41,0x00}, // '('
-    {0x00,0x41,0x22,0x1C,0x00}, // ')'
-    {0x14,0x08,0x3E,0x08,0x14}, // '*'
-    {0x08,0x08,0x3E,0x08,0x08}, // '+'
-    {0x00,0x50,0x30,0x00,0x00}, // ','
-    {0x08,0x08,0x08,0x08,0x08}, // '-'
-    {0x00,0x60,0x60,0x00,0x00}, // '.'
-    {0x20,0x10,0x08,0x04,0x02}, // '/'
-    {0x3E,0x51,0x49,0x45,0x3E}, // '0'
-    {0x00,0x42,0x7F,0x40,0x00}, // '1'
-    {0x42,0x61,0x51,0x49,0x46}, // '2'
-    {0x21,0x41,0x45,0x4B,0x31}, // '3'
-    {0x18,0x14,0x12,0x7F,0x10}, // '4'
-    {0x27,0x45,0x45,0x45,0x39}, // '5'
-    {0x3C,0x4A,0x49,0x49,0x30}, // '6'
-    {0x01,0x71,0x09,0x05,0x03}, // '7'
-    {0x36,0x49,0x49,0x49,0x36}, // '8'
-    {0x06,0x49,0x49,0x29,0x1E}, // '9'
-    {0x00,0x36,0x36,0x00,0x00}, // ':'
-    {0x00,0x56,0x36,0x00,0x00}, // ';'
-    {0x08,0x14,0x22,0x41,0x00}, // '<'
-    {0x14,0x14,0x14,0x14,0x14}, // '='
-    {0x00,0x41,0x22,0x14,0x08}, // '>'
-    {0x02,0x01,0x51,0x09,0x06}, // '?'
-    {0x32,0x49,0x79,0x41,0x3E}, // '@'
-    {0x7E,0x11,0x11,0x11,0x7E}, // 'A'
-    {0x7F,0x49,0x49,0x49,0x36}, // 'B'
-    {0x3E,0x41,0x41,0x41,0x22}, // 'C'
-    {0x7F,0x41,0x41,0x22,0x1C}, // 'D'
-    {0x7F,0x49,0x49,0x49,0x41}, // 'E'
-    {0x7F,0x09,0x09,0x09,0x01}, // 'F'
-    {0x3E,0x41,0x49,0x49,0x7A}, // 'G'
-    {0x7F,0x08,0x08,0x08,0x7F}, // 'H'
-    {0x00,0x41,0x7F,0x41,0x00}, // 'I'
-    {0x20,0x40,0x41,0x3F,0x01}, // 'J'
-    {0x7F,0x08,0x14,0x22,0x41}, // 'K'
-    {0x7F,0x40,0x40,0x40,0x40}, // 'L'
-    {0x7F,0x02,0x04,0x02,0x7F}, // 'M'
-    {0x7F,0x04,0x08,0x10,0x7F}, // 'N'
-    {0x3E,0x41,0x41,0x41,0x3E}, // 'O'
-    {0x7F,0x09,0x09,0x09,0x06}, // 'P'
-    {0x3E,0x41,0x51,0x21,0x5E}, // 'Q'
-    {0x7F,0x09,0x19,0x29,0x46}, // 'R'
-    {0x46,0x49,0x49,0x49,0x31}, // 'S'
-    {0x01,0x01,0x7F,0x01,0x01}, // 'T'
-    {0x3F,0x40,0x40,0x40,0x3F}, // 'U'
-    {0x1F,0x20,0x40,0x20,0x1F}, // 'V'
-    {0x3F,0x40,0x38,0x40,0x3F}, // 'W'
-    {0x63,0x14,0x08,0x14,0x63}, // 'X'
-    {0x07,0x08,0x70,0x08,0x07}, // 'Y'
-    {0x61,0x51,0x49,0x45,0x43}, // 'Z'
-    {0x00,0x7F,0x41,0x41,0x00}, // '['
-    {0x02,0x04,0x08,0x10,0x20}, // '\'
-    {0x00,0x41,0x41,0x7F,0x00}, // ']'
-    {0x04,0x02,0x01,0x02,0x04}, // '^'
-    {0x40,0x40,0x40,0x40,0x40}, // '_'
-    {0x00,0x01,0x02,0x04,0x00}, // '`'
-    {0x20,0x54,0x54,0x54,0x78}, // 'a'
-    {0x7F,0x48,0x44,0x44,0x38}, // 'b'
-    {0x38,0x44,0x44,0x44,0x20}, // 'c'
-    {0x38,0x44,0x44,0x48,0x7F}, // 'd'
-    {0x38,0x54,0x54,0x54,0x18}, // 'e'
-    {0x08,0x7E,0x09,0x01,0x02}, // 'f'
-    {0x0C,0x52,0x52,0x52,0x3E}, // 'g'
-    {0x7F,0x08,0x04,0x04,0x78}, // 'h'
-    {0x00,0x44,0x7D,0x40,0x00}, // 'i'
-    {0x20,0x40,0x44,0x3D,0x00}, // 'j'
-    {0x7F,0x10,0x28,0x44,0x00}, // 'k'
-    {0x00,0x41,0x7F,0x40,0x00}, // 'l'
-    {0x7C,0x04,0x18,0x04,0x78}, // 'm'
-    {0x7C,0x08,0x04,0x04,0x78}, // 'n'
-    {0x38,0x44,0x44,0x44,0x38}, // 'o'
-    {0x7C,0x14,0x14,0x14,0x08}, // 'p'
-    {0x08,0x14,0x14,0x18,0x7C}, // 'q'
-    {0x7C,0x08,0x04,0x04,0x08}, // 'r'
-    {0x48,0x54,0x54,0x54,0x20}, // 's'
-    {0x04,0x3F,0x44,0x40,0x20}, // 't'
-    {0x3C,0x40,0x40,0x40,0x7C}, // 'u'
-    {0x1C,0x20,0x40,0x20,0x1C}, // 'v'
-    {0x3C,0x40,0x30,0x40,0x3C}, // 'w'
-    {0x44,0x28,0x10,0x28,0x44}, // 'x'
-    {0x0C,0x50,0x50,0x50,0x3C}, // 'y'
-    {0x44,0x64,0x54,0x4C,0x44}, // 'z'
-    {0x00,0x08,0x36,0x41,0x00}, // '{'
-    {0x00,0x00,0x7F,0x00,0x00}, // '|'
-    {0x00,0x41,0x36,0x08,0x00}, // '}'
-    {0x10,0x08,0x08,0x10,0x08}, // '~'
+    {0x3E,0x51,0x49,0x45,0x3E}, // '0'  index 0
+    {0x00,0x42,0x7F,0x40,0x00}, // '1'  index 1
+    {0x42,0x61,0x51,0x49,0x46}, // '2'  index 2
+    {0x21,0x41,0x45,0x4B,0x31}, // '3'  index 3
+    {0x18,0x14,0x12,0x7F,0x10}, // '4'  index 4
+    {0x27,0x45,0x45,0x45,0x39}, // '5'  index 5
+    {0x3C,0x4A,0x49,0x49,0x30}, // '6'  index 6
+    {0x01,0x71,0x09,0x05,0x03}, // '7'  index 7
+    {0x36,0x49,0x49,0x49,0x36}, // '8'  index 8
+    {0x06,0x49,0x49,0x29,0x1E}, // '9'  index 9
+    {0x00,0x60,0x60,0x00,0x00}, // '.'  index 10
+    {0x3F,0x40,0x38,0x40,0x3F}, // 'W'  index 11
+    {0x00,0x41,0x7F,0x41,0x00}, // 'I'  index 12
+    {0x08,0x08,0x08,0x08,0x08}, // '-'  index 13
+    {0x00,0x00,0x00,0x00,0x00}, // ' '  index 14
+    {0x7F,0x08,0x14,0x22,0x00}, // 'k'  index 15
+    {0x7F,0x02,0x04,0x02,0x7F}, // 'm'  index 16
+    {0x10,0x08,0x04,0x02,0x01}, // '/'  index 17
+    {0x7F,0x08,0x04,0x04,0x78}, // 'h'  index 18
+    {0x26,0x16,0x08,0x34,0x32}, // '%'  index 19
+    {0x7E,0x11,0x11,0x11,0x7E}, // 'A'  index 20
+    {0x7F,0x49,0x49,0x49,0x36}, // 'B'  index 21
+    {0x3E,0x41,0x41,0x41,0x22}, // 'C'  index 22
+    {0x7F,0x41,0x41,0x22,0x1C}, // 'D'  index 23
+    {0x7F,0x49,0x49,0x49,0x41}, // 'E'  index 24
+    {0x7F,0x09,0x09,0x09,0x01}, // 'F'  index 25
+    {0x00,0x36,0x36,0x00,0x00}, // ':'  index 26
+    {0x7F,0x08,0x08,0x08,0x7F}, // 'H'  index 27
+    {0x3E,0x41,0x41,0x41,0x3E}, // 'O'  index 28
+    {0x7F,0x09,0x09,0x09,0x06}, // 'P'  index 29
+    {0x7F,0x09,0x19,0x29,0x46}, // 'R'  index 30
+    {0x01,0x01,0x7F,0x01,0x01}, // 'T'  index 31
+    {0x7F,0x40,0x40,0x40,0x40}, // 'L'  index 32
+    {0x3E,0x41,0x49,0x49,0x7A}, // 'G'  index 33
+    {0x46,0x49,0x49,0x49,0x31}, // 'S'  index 34
+    {0x00,0x05,0x03,0x00,0x00}, // '\'' index 35
+    {0x00,0x00,0x5F,0x00,0x00}, // '!'  index 36
 };
+#define FONT_IDX_DOT   10
+#define FONT_IDX_W     11
+#define FONT_IDX_DASH  13
+#define FONT_IDX_SPACE 14
 
 static void fb_char(int x, int y, char c, uint16_t col, int scale)
 {
-    if (c < 0x20 || c > 0x7E) return;
-    int idx = c - 0x20;
-    for (int row = 0; row < 7; row++)
-    for (int col_b = 0; col_b < 5; col_b++) {
-        if (!((FONT5X7[idx][col_b] >> row) & 1)) continue;
-        for (int sy = 0; sy < scale; sy++)
-        for (int sx = 0; sx < scale; sx++) {
-            int px = x + col_b*scale + sx, py = y + row*scale + sy;
-            if (px>=0 && px<FB_W && py>=0 && py<FB_H) PX(px,py) = col;
+    int idx = -1;
+    if (c>='0' && c<='9') idx = c-'0';
+    else if (c>='A' && c<='F') idx = 20 + (c - 'A');
+    else if (c=='.') idx = FONT_IDX_DOT;
+    else if (c=='W') idx = FONT_IDX_W;
+    else if (c=='-') idx = FONT_IDX_DASH;
+    else if (c==' ') idx = FONT_IDX_SPACE;
+    else if (c=='k') idx = 15;
+    else if (c=='m') idx = 16;
+    else if (c=='/') idx = 17;
+    else if (c=='h') idx = 18;
+    else if (c=='%') idx = 19;
+    else if (c==':') idx = 26;
+    else if (c=='H') idx = 27;
+    else if (c=='I') idx = 12;
+    else if (c=='O') idx = 28;
+    else if (c=='P') idx = 29;
+    else if (c=='R') idx = 30;
+    else if (c=='T') idx = 31;
+    else if (c=='L') idx = 32;
+    else if (c=='G') idx = 33;
+    else if (c=='S') idx = 34;
+    else if (c=='\'') idx = 35;
+    else if (c=='!') idx = 36;
+    if (idx<0) return;
+    for (int row=0; row<7; row++)
+    for (int col_b=0; col_b<5; col_b++) {
+        if (!((FONT5X7[idx][col_b]>>row)&1)) continue;
+        for (int sy=0; sy<scale; sy++)
+        for (int sx=0; sx<scale; sx++) {
+            int px=x+col_b*scale+sx, py=y+row*scale+sy;
+            if (px>=0&&px<FB_W&&py>=0&&py<FB_H) PX(px,py)=col;
         }
     }
 }
@@ -354,425 +340,318 @@ static void fb_str(int x, int y, const char *s, uint16_t col, int scale)
 // ─── QR pairing state ────────────────────────────────────────────────────────
 #define QR_BUF_LEN  qrcodegen_BUFFER_LEN_FOR_VERSION(5)
 
-static char    g_pairing_id[32]      = {0};
+static char    g_pairing_id[32]    = {0};
 static uint8_t g_qr_cache[QR_BUF_LEN] = {0};
-static bool    g_qr_valid            = false;
+static bool    g_qr_valid          = false;
 
 void display_set_pairing_id(const char *id)
 {
     strlcpy(g_pairing_id, id, sizeof(g_pairing_id));
+
     uint8_t tmp[QR_BUF_LEN];
     char qr_text[64];
+    // Uppercase URI: all chars are in QR alphanumeric set → smaller code (version 2)
     snprintf(qr_text, sizeof(qr_text), "AERODRAG://PAIR/%s", id);
     g_qr_valid = qrcodegen_encodeText(qr_text, tmp, g_qr_cache,
                                        qrcodegen_Ecc_LOW, 1, 5,
                                        qrcodegen_Mask_AUTO, true);
 }
 
-// ─── Session best + rider config ─────────────────────────────────────────────
-static float    g_session_best_cda = 9999.0f;
-static uint32_t g_best_flash_end   = 0;
-static float    g_rider_mass_kg    = 75.0f;
-static uint16_t g_rider_ftp_w      = 250;
+// ─── Toast notification ───────────────────────────────────────────────────────
+static char              g_toast_msg[40]  = {0};
+static volatile uint32_t g_toast_end_ms   = 0;
 
-void display_set_rider_config(float mass_kg, uint16_t ftp_w)
-{
-    g_rider_mass_kg = (mass_kg > 0.0f) ? mass_kg : 75.0f;
-    g_rider_ftp_w   = (ftp_w  > 0)    ? ftp_w   : 250;
-}
-
-static const char *cda_grade(float cda)
-{
-    if (cda < 0.200f) return "A+";
-    if (cda < 0.220f) return "A";
-    if (cda < 0.250f) return "B";
-    if (cda < 0.280f) return "C";
-    return "D";
-}
-
-static uint16_t power_zone_col(uint16_t w, uint16_t ftp)
-{
-    if (!ftp || !w) return COL_MUTED;
-    uint32_t pct = (uint32_t)w * 100u / ftp;
-    if (pct < 55)  return COL_MUTED;
-    if (pct < 75)  return COL_TEAL;
-    if (pct < 90)  return rgb(80, 200, 120);
-    if (pct < 105) return COL_AMBER;
-    if (pct < 120) return rgb(255, 120, 20);
-    return COL_RED;
-}
-
-static const char *power_zone_name(uint16_t w, uint16_t ftp)
-{
-    if (!ftp || !w) return "";
-    uint32_t pct = (uint32_t)w * 100u / ftp;
-    if (pct < 55)  return "Z1 Recovery";
-    if (pct < 75)  return "Z2 Endurance";
-    if (pct < 90)  return "Z3 Tempo";
-    if (pct < 105) return "Z4 Threshold";
-    if (pct < 120) return "Z5 VO2Max";
-    return "Z6 Anaerobic";
-}
+// ─── Connection + timer state (set from main task) ───────────────────────────
+static bool     g_ble_connected      = false;
+static bool     g_wifi_ready         = false;
+static uint32_t g_session_elapsed_s  = 0;
+static uint32_t g_lap_elapsed_s      = 0;
+static uint16_t g_lap_num_display    = 1;
 
 // ─── Screen state ─────────────────────────────────────────────────────────────
-typedef enum { SCR_PAIRING=0, SCR_CDA, SCR_SPEED, SCR_POWER, SCR_STATUS, SCR_COUNT } screen_t;
+typedef enum { SCR_PAIRING=0, SCR_CDA, SCR_TIMER, SCR_POWER, SCR_STATUS, SCR_COUNT } screen_t;
 static screen_t g_screen = SCR_PAIRING;
 
-screen_t display_get_screen(void) { return g_screen; }
-
-// ─── Battery icon (20×10 body + 3×4 cap, 4 fill bars) ───────────────────────
-static void fb_battery(int x, int y, uint8_t pct, uint16_t col)
+screen_t display_get_screen(void)
 {
-    // Body outline
-    fb_hline(x, x+19, y,   col);
-    fb_hline(x, x+19, y+9, col);
-    for (int dy = y; dy <= y+9; dy++) if (dy>=0&&dy<FB_H) { PX(x, dy)=col; PX(x+19, dy)=col; }
-    // Cap
-    fb_hline(x+20, x+22, y+3, col);
-    fb_hline(x+20, x+22, y+6, col);
-    for (int dy = y+3; dy <= y+6; dy++) if (dy>=0&&dy<FB_H) PX(x+22, dy) = col;
-    // 4 fill bars (3×6 each, 1px gap)
-    int bars = pct * 4 / 100;
-    for (int b = 0; b < 4; b++) {
-        int bx = x + 2 + b * 4;
-        uint16_t fc = (b < bars) ? col : COL_SURFACE;
-        for (int fy = y+2; fy <= y+7; fy++)
-            for (int fx = bx; fx < bx+3; fx++)
-                if (fx>=0&&fx<FB_W&&fy>=0&&fy<FB_H) PX(fx,fy) = fc;
+    return g_screen;
+}
+
+// ─── Status dots (4×, bottom-right): WiFi BLE ANT+ Pitot ─────────────────────
+static void render_status_dots(const aerodrag_sensors_t *s)
+{
+    struct { int x; uint16_t col; char lbl; } dots[4] = {
+        { FB_W - 35, g_wifi_ready    ? COL_TEAL : COL_MUTED, 'W' },
+        { FB_W - 26, g_ble_connected ? COL_TEAL : COL_MUTED, 'B' },
+        { FB_W - 17, s->ant_valid    ? COL_TEAL : COL_MUTED, 'A' },
+        { FB_W -  8, s->pitot_valid  ? COL_TEAL : COL_MUTED, 'P' },
+    };
+    for (int i = 0; i < 4; i++) {
+        fb_char(dots[i].x - 2, FB_H - 19, dots[i].lbl, COL_MUTED, 1);
+        fb_circle(dots[i].x,   FB_H -  8, 3, dots[i].col);
     }
 }
 
-// ─── Status dots (bottom-right corner, all non-pairing screens) ──────────────
-static void render_status_dots(const aerodrag_sensors_t *s)
+// ─── MM:SS helper ─────────────────────────────────────────────────────────────
+static void fb_time(int x, int y, uint32_t secs, uint16_t col, int scale)
 {
-    fb_circle(FB_W - 8,  FB_H - 8, 3, s->pitot_valid ? COL_TEAL : COL_MUTED);
-    fb_circle(FB_W - 16, FB_H - 8, 3, s->ant_valid   ? COL_TEAL : COL_MUTED);
+    char buf[6];
+    uint32_t mm = secs / 60;
+    if (mm > 99) mm = 99;
+    snprintf(buf, sizeof(buf), "%02lu:%02lu", (unsigned long)mm, (unsigned long)(secs % 60));
+    fb_str(x, y, buf, col, scale);
 }
 
 // ─── Render ───────────────────────────────────────────────────────────────────
 void display_render(const aerodrag_sensors_t *s, const aerodrag_physics_t *p)
 {
     if (!g_fb) return;
-    const int CX = FB_W / 2, CY = FB_H / 2;   // 120, 160
+    const int CX = FB_W/2, CY = FB_H/2;   // 120, 160
 
     fb_fill(COL_BG);
 
+    if (g_screen != SCR_PAIRING && g_screen != SCR_TIMER)
+        fb_ring(CX, CY, 116, 3, COL_SURFACE);
+
 switch (g_screen) {
 
-    // ── Pairing ───────────────────────────────────────────────────────────────
     case SCR_PAIRING: {
         if (!g_qr_valid) {
+            // fallback: just show device ID
             int w = (int)strlen(g_pairing_id) * 6;
             fb_str((FB_W - w) / 2, CY - 4, g_pairing_id, COL_TEAL, 1);
             break;
         }
-        int sz     = qrcodegen_getSize(g_qr_cache);
-        const int SCALE = 7, PAD = 10;
+        int sz  = qrcodegen_getSize(g_qr_cache);
+        const int SCALE = 7;
+        const int PAD   = 10;   // white quiet-zone pixels on each side
         int qr_px  = sz * SCALE;
         int rect_w = qr_px + 2 * PAD;
         int rect_h = qr_px + 2 * PAD;
-        int rx = (FB_W - rect_w) / 2, ry = 20;
-        int ox = rx + PAD, oy = ry + PAD;
+        int rx = (FB_W - rect_w) / 2;
+        int ry = 20;
+        int ox = rx + PAD;
+        int oy = ry + PAD;
 
-        uint16_t WHITE = rgb(255,255,255), BLACK = rgb(0,0,0);
+        // White background for QR
+        uint16_t WHITE = rgb(255,255,255);
+        uint16_t BLACK = rgb(0,0,0);
         for (int y = ry; y < ry + rect_h; y++)
             for (int x = rx; x < rx + rect_w; x++)
                 if (x>=0&&x<FB_W&&y>=0&&y<FB_H) PX(x,y) = WHITE;
 
+        // QR modules
         for (int qy = 0; qy < sz; qy++)
         for (int qx = 0; qx < sz; qx++) {
             uint16_t c = qrcodegen_getModule(g_qr_cache, qx, qy) ? BLACK : WHITE;
             for (int sy = 0; sy < SCALE; sy++)
             for (int sx = 0; sx < SCALE; sx++) {
-                int px = ox + qx*SCALE + sx, py = oy + qy*SCALE + sy;
+                int px = ox + qx*SCALE + sx;
+                int py = oy + qy*SCALE + sy;
                 if (px>=0&&px<FB_W&&py>=0&&py<FB_H) PX(px,py) = c;
             }
         }
 
-        int id_w = (int)strlen(g_pairing_id) * 6;
-        fb_str((FB_W - id_w) / 2, ry + rect_h + 8, g_pairing_id, COL_MUTED, 1);
-        fb_circle(CX, ry + rect_h + 28, 4, COL_RED);
+        // Device ID below QR (scale=1 fits "AA:BB:CC:DD:EE:FF" = 102px)
+        {
+            int id_len = (int)strlen(g_pairing_id);
+            int id_w   = id_len * 6;
+            int id_x   = (FB_W - id_w) / 2;
+            int id_y   = ry + rect_h + 8;
+            fb_str(id_x, id_y, g_pairing_id, COL_MUTED, 1);
+        }
+
+        // "Not connected" indicator dot
+        fb_circle(CX, ry + rect_h + 30, 4, COL_RED);
         break;
     }
 
-    // ── CdA / Performance ─────────────────────────────────────────────────────
     case SCR_CDA: {
-        bool  valid = (p && p->valid);
-        float cda   = valid ? p->CdA : 0.0f;
-
-        uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000LL);
-        if (valid && cda > 0.01f && cda < g_session_best_cda) {
-            g_session_best_cda = cda;
-            g_best_flash_end   = now_ms + 2000;
-        }
-
-        float pct = valid ? (cda - 0.18f) / 0.20f : 0.0f;
-        if (pct < 0.0f) pct = 0.0f;
-        if (pct > 1.0f) pct = 1.0f;
-
-        uint16_t arc_col = (pct < 0.33f) ? COL_TEAL
-                         : (pct < 0.67f) ? COL_AMBER : COL_RED;
-
-        fb_arc(CX, CY, 110, 12, -225.0f, 45.0f, COL_SURFACE);
-        if (valid && pct > 0.005f)
-            fb_arc(CX, CY, 110, 12, -225.0f, -225.0f + pct * 270.0f, arc_col);
-
-        // Session best — white tick on arc
-        if (g_session_best_cda < 9000.0f) {
-            float bp = (g_session_best_cda - 0.18f) / 0.20f;
-            if (bp < 0.0f) bp = 0.0f;
-            if (bp > 1.0f) bp = 1.0f;
-            float ba = -225.0f + bp * 270.0f;
-            fb_arc(CX, CY, 110, 12, ba - 1.5f, ba + 1.5f, rgb(255,255,255));
-        }
-
-        fb_str((FB_W - 36) / 2, 8, "CdA", COL_MUTED, 2);
-
-        // Grade (hero)
-        const char *grade     = valid ? cda_grade(cda) : "--";
-        uint16_t    grade_col = valid ? arc_col : COL_MUTED;
-        int gw = (int)strlen(grade) * 6 * 4;
-        fb_str((FB_W - gw) / 2, CY - 40, grade, grade_col, 4);
-
-        // CdA value
-        if (valid) {
+        float cda = (p && p->valid) ? p->CdA : 0.0f;
+        float pct = (cda - 0.20f) / 0.18f;
+        if (pct < 0) pct = 0;
+        if (pct > 1) pct = 1;
+        uint16_t arc_col = (pct < 0.35f) ? COL_TEAL
+                         : (pct < 0.65f) ? COL_AMBER
+                         :                  COL_RED;
+        fb_arc(CX, CY, 110, 10, -225.0f, 45.0f, COL_SURFACE);
+        if (pct > 0.01f)
+            fb_arc(CX, CY, 110, 10, -225.0f, -225.0f + pct*270.0f, arc_col);
+        if (p && p->valid) {
             char buf[8];
-            snprintf(buf, sizeof(buf), "0.%03d", (int)(cda * 1000) % 1000);
-            int vw = (int)strlen(buf) * 12;
-            fb_str((FB_W - vw) / 2, CY + 8, buf, COL_TEXT, 2);
-            fb_str(CX - 12, CY + 26, "m2", COL_MUTED, 2);
+            fb_str(CX - 52, CY - 26, "0.", COL_MUTED, 3);
+            snprintf(buf, sizeof(buf), "%03d", (int)(cda * 1000) % 1000);
+            fb_str(CX - 28, CY - 32, buf, arc_col, 4);
         } else {
-            fb_str(CX - 18, CY + 8, "---", COL_MUTED, 2);
+            if (s->pitot_valid && s->pitot_pa > 0.3f) {
+                float rho = 1.225f;
+                float v_air = sqrtf(2.0f * s->pitot_pa / rho) * 3.6f;
+                char buf[6];
+                snprintf(buf, sizeof(buf), "%d", (int)v_air);
+                fb_str(CX - 20, CY - 22, buf, COL_TEAL, 3);
+                fb_str(CX - 28, CY + 12, "km/h", COL_MUTED, 2);
+            } else {
+                fb_str(CX - 42, CY - 22, "0.---", COL_MUTED, 3);
+            }
         }
-
-        // "NEW BEST" blink
-        if (now_ms < g_best_flash_end && (now_ms / 500) % 2 == 0) {
-            int nbw = (int)strlen("NEW BEST") * 12;
-            fb_str((FB_W - nbw) / 2, CY + 44, "NEW BEST", COL_TEAL, 2);
-        }
-
-        // Bottom info bar
-        int bby = FB_H - 34;
-        if (valid && p->v_ground_ms > 0.5f) {
-            char spd[6];
+        if (p && p->valid && p->v_ground_ms > 0.5f) {
+            char spd[4];
             snprintf(spd, sizeof(spd), "%d", (int)(p->v_ground_ms * 3.6f));
-            fb_str(8, bby, spd, COL_TEXT, 2);
-            fb_str(8 + (int)strlen(spd) * 12, bby + 8, "km/h", COL_MUTED, 2);
-        }
-        if (s->pitot_valid && s->pitot_pa > 0.3f) {
-            float v_air = sqrtf(2.0f * s->pitot_pa / 1.225f) * 3.6f;
-            char wa[6];
-            snprintf(wa, sizeof(wa), "%d", (int)v_air);
-            int wx = CX - (int)strlen(wa) * 6;
-            fb_str(wx, bby, wa, COL_TEAL, 2);
-            fb_str(wx + (int)strlen(wa) * 12, bby + 8, "wind", COL_MUTED, 2);
+            int sw = (strlen(spd) * 6 * 2);
+            fb_str(CX - sw/2, CY + 52, spd, COL_TEXT, 2);
         }
         if (s->power_w > 0) {
             char pw[6];
             snprintf(pw, sizeof(pw), "%d", s->power_w);
-            int px = FB_W - (int)strlen(pw) * 12 - 14;
-            fb_str(px, bby, pw, COL_AMBER, 2);
-            fb_str(px + (int)strlen(pw) * 12, bby + 8, "W", COL_MUTED, 2);
+            fb_str(18, 28, pw, COL_AMBER, 2);
         }
+        float bat = s->battery_pct / 100.0f;
+        if (bat > 0.02f) {
+            fb_arc(CX, CY, 115, 4,
+                   70.0f, 70.0f + bat * 40.0f,
+                   bat > 0.25f ? COL_TEAL : COL_RED);
+        }
+        break;
+    }
 
-        // Battery icon top-right
+    case SCR_TIMER: {
+        // ── Lap number ────────────────────────────────────────────────────────
+        fb_str((FB_W - 36) / 2, 18, "LAP", COL_MUTED, 2);
         {
-            uint16_t bat_col = s->battery_pct > 25 ? COL_TEAL : COL_RED;
-            char bat_str[6];
-            snprintf(bat_str, sizeof(bat_str), "%d%%", s->battery_pct);
-            int bpw = (int)strlen(bat_str) * 12;
-            fb_str(FB_W - 24 - bpw - 3, 8, bat_str, bat_col, 2);
-            fb_battery(FB_W - 24, 8, s->battery_pct, bat_col);
+            char nbuf[4];
+            snprintf(nbuf, sizeof(nbuf), "%d", g_lap_num_display);
+            int nw = (int)strlen(nbuf) * 30;   // scale 5
+            fb_str((FB_W - nw) / 2, 40, nbuf, COL_TEAL, 5);
         }
-        render_status_dots(s);
+        // ── Lap time (center, large) ──────────────────────────────────────────
+        {
+            uint16_t lap_col = (g_lap_elapsed_s < 60) ? COL_TEAL : COL_AMBER;
+            fb_time((FB_W - 5*24) / 2, 95, g_lap_elapsed_s, lap_col, 4);
+        }
+        fb_str((FB_W - 18) / 2, 130, "LAP", COL_MUTED, 1);
+        // ── Divider ───────────────────────────────────────────────────────────
+        fb_hline(30, FB_W - 30, 150, COL_SURFACE);
+        fb_hline(30, FB_W - 30, 151, COL_SURFACE);
+        // ── Session total (bottom half) ───────────────────────────────────────
+        fb_str((FB_W - 18) / 2, 162, "TOT", COL_MUTED, 1);
+        fb_time((FB_W - 5*18) / 2, 174, g_session_elapsed_s, COL_TEXT, 3);
         break;
     }
 
-    // ── Speed ─────────────────────────────────────────────────────────────────
-    case SCR_SPEED: {
-        fb_str((FB_W - 60) / 2, 8, "Speed", COL_MUTED, 2);
-
-        float spd_kmh = s->gps_valid      ? s->speed_ms * 3.6f
-                      : (p && p->valid)   ? p->v_ground_ms * 3.6f
-                      : 0.0f;
-        char spd_buf[6];
-        snprintf(spd_buf, sizeof(spd_buf), "%d", (int)spd_kmh);
-        int sw = (int)strlen(spd_buf) * 36;   // scale 6
-        fb_str((FB_W - sw) / 2, CY - 22, spd_buf, COL_TEXT, 6);
-
-        int km_w = 4 * 12;   // "km/h" scale 2
-        fb_str((FB_W - km_w) / 2, CY + 26, "km/h", COL_MUTED, 2);
-
-        if (s->pitot_valid && s->pitot_pa > 0.3f) {
-            float v_air   = sqrtf(2.0f * s->pitot_pa / 1.225f) * 3.6f;
-            float delta   = spd_kmh - v_air;
-            char  air[20], wind[20];
-            snprintf(air,  sizeof(air),  "Air: %d km/h",  (int)v_air);
-            snprintf(wind, sizeof(wind), "Wind: %+d km/h", (int)delta);
-            int aw = (int)strlen(air) * 12, ww = (int)strlen(wind) * 12;
-            fb_str((FB_W - aw) / 2, CY + 44, air,  COL_TEAL, 2);
-            uint16_t wcol = (delta >  2.0f) ? COL_RED
-                          : (delta < -2.0f) ? COL_TEAL : COL_MUTED;
-            fb_str((FB_W - ww) / 2, CY + 60, wind, wcol, 2);
-        }
-
-        if (s->hr_bpm > 0) {
-            char hr[6];
-            snprintf(hr, sizeof(hr), "%d", s->hr_bpm);
-            fb_str(FB_W - (int)strlen(hr) * 12 - 4, 8, hr, COL_RED, 2);
-            fb_str(FB_W - 24, 24, "bpm", COL_MUTED, 2);
-        }
-
-        if (s->power_w > 0) {
-            char pw[12];
-            snprintf(pw, sizeof(pw), "%d W", s->power_w);
-            int pw_w = (int)strlen(pw) * 12;
-            fb_str((FB_W - pw_w) / 2, FB_H - 44,
-                   pw, power_zone_col(s->power_w, g_rider_ftp_w), 2);
-        }
-        render_status_dots(s);
-        break;
-    }
-
-    // ── Power / Energy split ──────────────────────────────────────────────────
     case SCR_POWER: {
-        char buf[16];
-        uint16_t    zone_col  = power_zone_col(s->power_w, g_rider_ftp_w);
-        const char *zone_name = power_zone_name(s->power_w, g_rider_ftp_w);
-
-        snprintf(buf, sizeof(buf), "%d W", s->power_w);
-        int pw_w = (int)strlen(buf) * 18;   // scale 3
-        fb_str((FB_W - pw_w) / 2, 10, buf, zone_col, 3);
-
-        int znw = (int)strlen(zone_name) * 12;
-        fb_str((FB_W - znw) / 2, 38, zone_name, zone_col, 2);
-
-        if (g_rider_mass_kg > 0.0f && s->power_w > 0) {
-            snprintf(buf, sizeof(buf), "%.1f W/kg", s->power_w / g_rider_mass_kg);
-            int wkw = (int)strlen(buf) * 12;
-            fb_str((FB_W - wkw) / 2, 56, buf, COL_MUTED, 2);
-        }
-
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%d", s->power_w);
+        fb_str(CX - (int)strlen(buf)*9, CY - 54, buf, COL_AMBER, 3);
+        fb_str(CX + 16, CY - 36, "W", COL_AMBER, 2);
         if (p && p->valid && s->power_w > 0) {
-            uint8_t pa  = p->pct_aero;
+            uint8_t pa = p->pct_aero;
             float   pr_f = (p->p_rolling_w / (float)s->power_w) * 100.0f;
-            uint8_t pr  = (pr_f > 100.0f) ? 100 : (pr_f < 0.0f) ? 0 : (uint8_t)pr_f;
-            uint8_t po  = (pa + pr < 100) ? (100 - pa - pr) : 0;
-
-            const int BH = 100, BY = 84, BW = 30, GAP = 14;
-            int bx = (FB_W - (3*BW + 2*GAP)) / 2;
-
-            struct { uint8_t pct; uint16_t col; const char *lbl; } bars[3] = {
-                {pa, COL_RED,   "Aero"},
-                {pr, COL_TEAL,  "Roll"},
-                {po, COL_MUTED, "Other"},
+            uint8_t pr = (pr_f > 100.0f) ? 100 : (pr_f < 0.0f) ? 0 : (uint8_t)pr_f;
+            uint8_t po = (pa + pr < 100) ? (100 - pa - pr) : 0;
+            const int BH = 70, BY = CY + 10, BW = 22, GAP = 8;
+            int bx = CX - BW - GAP/2 - BW/2;
+            struct { uint8_t pct; uint16_t col; } bars[3] = {
+                {pa, COL_RED}, {pr, COL_TEAL}, {po, COL_MUTED}
             };
             for (int b = 0; b < 3; b++) {
                 int filled = BH * bars[b].pct / 100;
-                for (int y = BY; y < BY + BH; y++)
-                    for (int x = bx; x < bx + BW; x++)
-                        if (x>=0&&x<FB_W&&y>=0&&y<FB_H) PX(x,y) = COL_SURFACE;
-                for (int y = BY + BH - filled; y < BY + BH; y++)
-                    for (int x = bx; x < bx + BW; x++)
-                        if (x>=0&&x<FB_W&&y>=0&&y<FB_H) PX(x,y) = bars[b].col;
-
-                int lw = (int)strlen(bars[b].lbl) * 6;
-                fb_str(bx + (BW - lw) / 2, BY - 14, bars[b].lbl, bars[b].col, 1);
-
-                snprintf(buf, sizeof(buf), "%d%%", bars[b].pct);
-                int buw = (int)strlen(buf) * 6;
-                fb_str(bx + (BW - buw) / 2, BY + BH + 6, buf, bars[b].col, 1);
-
+                for (int y=BY; y<BY+BH; y++)
+                    for (int x=bx; x<bx+BW; x++)
+                        if (x>=0&&x<FB_W&&y>=0&&y<FB_H) PX(x,y)=COL_SURFACE;
+                for (int y=BY+BH-filled; y<BY+BH; y++)
+                    for (int x=bx; x<bx+BW; x++)
+                        if (x>=0&&x<FB_W&&y>=0&&y<FB_H) PX(x,y)=bars[b].col;
                 bx += BW + GAP;
             }
-        } else {
-            int dw = 3 * 12;
-            fb_str((FB_W - dw) / 2, CY, "---", COL_MUTED, 2);
+            snprintf(buf, sizeof(buf), "%d%%", pa);
+            fb_str(CX - 52, BY + BH + 6, buf, COL_RED, 1);
+            snprintf(buf, sizeof(buf), "%d%%", pr);
+            fb_str(CX - 12, BY + BH + 6, buf, COL_TEAL, 1);
         }
-        render_status_dots(s);
         break;
     }
 
-    // ── Status / Vitals 2×2 ───────────────────────────────────────────────────
     case SCR_STATUS: {
-        char buf[20];
+    char buf[8];
 
-        // Grid dividers
-        fb_hline(0, FB_W - 1, 159, COL_SURFACE);
-        fb_hline(0, FB_W - 1, 160, COL_SURFACE);
-        for (int y = 0; y < FB_H; y++) {
-            if (y >= 0 && y < FB_H) { PX(119,y) = COL_SURFACE; PX(120,y) = COL_SURFACE; }
-        }
+    snprintf(buf, sizeof(buf), "%d%%", s->battery_pct);
+    fb_str(CX - 18, CY - 80, buf, s->battery_pct > 25 ? COL_TEAL : COL_RED, 2);
 
-        // TL — CdA
-        {
-            bool   cda_valid = (p && p->valid);
-            float  cda_val   = cda_valid ? p->CdA : 0.0f;
-            float  cpct = cda_valid ? (cda_val - 0.18f) / 0.20f : 0.0f;
-            if (cpct < 0.0f) cpct = 0.0f;
-            if (cpct > 1.0f) cpct = 1.0f;
-            uint16_t cda_col = (cpct < 0.33f) ? COL_TEAL
-                             : (cpct < 0.67f) ? COL_AMBER : COL_RED;
-            if (!cda_valid) cda_col = COL_MUTED;
+    fb_circle(CX - 40, CY, 8, COL_RED);
+    snprintf(buf, sizeof(buf), "%d", s->hr_bpm > 0 ? s->hr_bpm : 0);
+    fb_str(CX - 25, CY - 6, buf, COL_TEXT, 2);
 
-            fb_str(10, 10, "CdA", COL_MUTED, 2);
-            if (cda_valid) {
-                snprintf(buf, sizeof(buf), "0.%03d", (int)(cda_val * 1000) % 1000);
-                fb_str(10, 28, buf, cda_col, 3);
-                const char *gr = cda_grade(cda_val);
-                int gw2 = (int)strlen(gr) * 12;
-                fb_str(10, 72, gr, cda_col, 2);
-                (void)gw2;
-            } else {
-                fb_str(10, 28, "---", COL_MUTED, 3);
-            }
-        }
+    snprintf(buf, sizeof(buf), "%d", s->cadence_rpm > 0 ? s->cadence_rpm : 0);
+    fb_str(CX + 30, CY - 6, buf, COL_AMBER, 2);
 
-        // TR — Heart Rate
-        fb_str(130, 10, "HR", COL_MUTED, 2);
-        uint16_t hr_col = s->hr_bpm > 0 ? COL_RED : COL_MUTED;
-        snprintf(buf, sizeof(buf), "%d", s->hr_bpm > 0 ? s->hr_bpm : 0);
-        fb_str(130, 28, buf, hr_col, 4);
-        fb_str(130, 64, "bpm", COL_MUTED, 2);
-        fb_circle(195, 108, 5, hr_col);
-
-        // BL — Cadence
-        fb_str(10, 172, "Cadence", COL_MUTED, 2);
-        uint16_t cad_col = s->cadence_rpm > 0 ? COL_AMBER : COL_MUTED;
-        snprintf(buf, sizeof(buf), "%d", s->cadence_rpm > 0 ? s->cadence_rpm : 0);
-        fb_str(10, 190, buf, cad_col, 4);
-        fb_str(10, 226, "rpm", COL_MUTED, 2);
-
-        // BR — Power
-        {
-            uint16_t pwr_col = power_zone_col(s->power_w, g_rider_ftp_w);
-            fb_str(130, 172, "Power", COL_MUTED, 2);
-            snprintf(buf, sizeof(buf), "%d", s->power_w > 0 ? s->power_w : 0);
-            fb_str(130, 190, buf, pwr_col, 4);
-            fb_str(130, 226, "W", COL_MUTED, 2);
-            if (s->power_w > 0) {
-                const char *zn = power_zone_name(s->power_w, g_rider_ftp_w);
-                int znw2 = (int)strlen(zn) * 6;
-                fb_str(130, 250, zn, pwr_col, 1);
-                (void)znw2;
-            }
-            // ANT+ status dot
-            uint16_t ant_col = s->ant_valid ? COL_TEAL : COL_MUTED;
-            fb_circle(195, 295, 4, ant_col);
-        }
-        break;
-    }
+    uint16_t gps_col = (s->gps_fix >= 2) ? COL_TEAL
+                     : (s->gps_fix == 1) ? COL_AMBER
+                     :                      COL_RED;
+    fb_hline(CX - 40, CX + 40, CY + 80, gps_col);
+    fb_hline(CX - 40, CX + 40, CY + 81, gps_col);
+    break;
+}
 
     default: break;
     }
+
+    if (g_screen != SCR_PAIRING)
+        render_status_dots(s);
+
+    // ── Toast overlay ─────────────────────────────────────────────────────────
+    {
+        uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000LL);
+        if (g_toast_end_ms > now_ms && g_toast_msg[0]) {
+            int msg_w = (int)strlen(g_toast_msg) * 12;
+            int box_w = msg_w + 24, box_h = 30;
+            int bx = (FB_W - box_w) / 2, by = (FB_H - box_h) / 2;
+            for (int yy = by - 2; yy < by + box_h + 2; yy++)
+                for (int xx = bx - 2; xx < bx + box_w + 2; xx++)
+                    if (xx >= 0 && xx < FB_W && yy >= 0 && yy < FB_H)
+                        PX(xx, yy) = COL_TEAL;
+            for (int yy = by; yy < by + box_h; yy++)
+                for (int xx = bx; xx < bx + box_w; xx++)
+                    if (xx >= 0 && xx < FB_W && yy >= 0 && yy < FB_H)
+                        PX(xx, yy) = COL_BG;
+            fb_str((FB_W - msg_w) / 2, by + 8, g_toast_msg, COL_TEAL, 2);
+        }
+    }
     display_flush();
+}
+
+void display_show_toast(const char *msg, uint32_t duration_ms)
+{
+    strlcpy(g_toast_msg, msg, sizeof(g_toast_msg));
+    g_toast_end_ms = (uint32_t)(esp_timer_get_time() / 1000LL) + duration_ms;
+}
+
+void display_clear_toast(void)
+{
+    g_toast_msg[0] = '\0';
+    g_toast_end_ms  = 0;
+}
+
+void display_set_connection_status(bool ble, bool wifi)
+{
+    g_ble_connected = ble;
+    g_wifi_ready    = wifi;
+}
+
+void display_set_timers(uint32_t session_s, uint32_t lap_s, uint16_t lap_num)
+{
+    g_session_elapsed_s = session_s;
+    g_lap_elapsed_s     = lap_s;
+    g_lap_num_display   = lap_num;
 }
 
 void display_next_screen(void)
 {
     screen_t n = (screen_t)((g_screen + 1) % SCR_COUNT);
-    if (n == SCR_PAIRING) n = SCR_CDA;
+    if (n == SCR_PAIRING) n = SCR_CDA;  // skip pairing in manual cycle
     g_screen = n;
 }
 
-void display_set_screen(screen_t scr) { g_screen = scr; }
+void display_set_screen(screen_t scr)
+{
+    g_screen = scr;
+}

@@ -76,11 +76,13 @@ static SemaphoreHandle_t   g_i2c1_mutex    = NULL;
 
 static float g_cda_smooth = 0.0f;
 
-uint8_t g_current_lap = 1;
+uint16_t g_current_lap = 1;
 
 // Fix H3: inizializzato in app_main (non a 0) per evitare che il watchdog
 // deep-sleep scatti 10 minuti dopo il boot prima di qualsiasi sessione.
-static int64_t g_last_activity_us = 0;
+static int64_t g_last_activity_us  = 0;
+static volatile int64_t g_session_start_us = -1;
+static volatile int64_t g_lap_start_us     = -1;
 #define SLEEP_TIMEOUT_US  (10LL * 60 * 1000 * 1000)
 
 #define SENSORS_LOCK()    xSemaphoreTake(g_sensors_mutex, portMAX_DELAY)
@@ -197,6 +199,7 @@ static void task_pitot_imu(void *arg)
         bool lap_pending_this_cycle = false;
         if (lap_now) {
             g_current_lap++;
+            g_lap_start_us = esp_timer_get_time();
             lap_pending_this_cycle = true;
             ESP_LOGI("lap", "LAP event ANT+ → lap %d", g_current_lap);
         }
@@ -222,6 +225,7 @@ static void task_pitot_imu(void *arg)
             g_coach_lap_cmd = false;
             if (!lap_pending_this_cycle) {
                 g_current_lap++;
+                g_lap_start_us = esp_timer_get_time();
                 lap_pending_this_cycle = true;
                 ESP_LOGI(TAG, "LAP da coach WiFi → lap %d", g_current_lap);
             } else {
@@ -275,6 +279,14 @@ static void task_display(void *arg)
         aerodrag_physics_t p_copy = g_physics;
         SENSORS_UNLOCK();
 
+        {
+            int64_t now_us = esp_timer_get_time();
+            int64_t s0 = g_session_start_us, l0 = g_lap_start_us;
+            uint32_t sess_s = (s0 > 0) ? (uint32_t)((now_us - s0) / 1000000LL) : 0;
+            uint32_t lap_s  = (l0 > 0) ? (uint32_t)((now_us - l0) / 1000000LL) : 0;
+            display_set_timers(sess_s, lap_s, g_current_lap);
+            display_set_connection_status(ble_is_connected(), coach_is_ready());
+        }
         display_render(&s_copy, &p_copy);
     }
 }
@@ -314,6 +326,8 @@ static void task_housekeeping(void *arg)
 static volatile int64_t g_btn_press_us       = 0;
 static volatile bool    g_btn_long_press      = false;
 static volatile bool    g_btn_very_long_press = false;
+static volatile int64_t g_btn_last_tap_us     = 0;
+static volatile bool    g_btn_double_click    = false;
 
 static void IRAM_ATTR btn_isr(void *arg)
 {
@@ -329,7 +343,53 @@ static void IRAM_ATTR btn_isr(void *arg)
             g_btn_long_press = true;
         } else if (held_ms >= 50) {
             g_screen_next = true;
+            if (g_btn_last_tap_us > 0 && (now - g_btn_last_tap_us) < 400000LL) {
+                g_btn_double_click = true;
+                g_btn_last_tap_us  = 0;
+            } else {
+                g_btn_last_tap_us = now;
+            }
         }
+    }
+}
+
+// ─── Optional external button ISRs (GPIO17 / GPIO18) ────────────────────────
+static volatile int64_t g_btn_screen_press_us  = -1;
+static volatile int64_t g_btn_lap_press_us     = -1;
+static volatile int64_t g_btn_lap_last_tap_us  = 0;
+static volatile bool    g_btn_lap_click        = false;
+
+static void IRAM_ATTR btn_screen_isr(void *arg)
+{
+    int64_t now = esp_timer_get_time();
+    if (gpio_get_level(PIN_BTN_SCREEN) == 0) {
+        g_btn_screen_press_us = now;
+    } else {
+        if (g_btn_screen_press_us >= 0 &&
+            (now - g_btn_screen_press_us) / 1000 >= 50)
+            g_screen_next = true;
+        g_btn_screen_press_us = -1;
+    }
+}
+
+static void IRAM_ATTR btn_lap_isr(void *arg)
+{
+    int64_t now = esp_timer_get_time();
+    if (gpio_get_level(PIN_BTN_LAP) == 0) {
+        g_btn_lap_press_us = now;
+    } else {
+        if (g_btn_lap_press_us >= 0 &&
+            (now - g_btn_lap_press_us) / 1000 >= 50) {
+            if (g_btn_lap_last_tap_us > 0 &&
+                (now - g_btn_lap_last_tap_us) < 400000LL) {
+                g_btn_double_click    = true;
+                g_btn_lap_last_tap_us = 0;
+            } else {
+                g_btn_lap_click       = true;
+                g_btn_lap_last_tap_us = now;
+            }
+        }
+        g_btn_lap_press_us = -1;
     }
 }
 
@@ -342,8 +402,19 @@ static void btn_init(void)
         .intr_type    = GPIO_INTR_ANYEDGE,
     };
     gpio_config(&io);
+
+    gpio_config_t io_ext = {
+        .pin_bit_mask = (1ULL << PIN_BTN_SCREEN) | (1ULL << PIN_BTN_LAP),
+        .mode         = GPIO_MODE_INPUT,
+        .pull_up_en   = GPIO_PULLUP_ENABLE,
+        .intr_type    = GPIO_INTR_ANYEDGE,
+    };
+    gpio_config(&io_ext);
+
     gpio_install_isr_service(0);
-    gpio_isr_handler_add(PIN_BTN_USER, btn_isr, NULL);
+    gpio_isr_handler_add(PIN_BTN_USER,   btn_isr,        NULL);
+    gpio_isr_handler_add(PIN_BTN_SCREEN, btn_screen_isr, NULL);
+    gpio_isr_handler_add(PIN_BTN_LAP,    btn_lap_isr,    NULL);
 }
 
 // ─── Calibration procedure ───────────────────────────────────────────────────────────────────────────
@@ -351,6 +422,7 @@ static void do_calibration(void)
 {
     ESP_LOGI(TAG, "Calibration: averaging Pitot over 5 seconds...");
     g_state = STATE_CALIBRATING;
+    display_show_toast("CALIBRATING", 30000);
 
     float sum = 0;
     int   n   = 0;
@@ -370,6 +442,7 @@ static void do_calibration(void)
         ESP_LOGI(TAG, "Pitot zero offset set to %.4f Pa (avg of %d samples)",
                  g_cal.pitot_offset_pa, n);
     }
+    display_clear_toast();
     g_state = STATE_CONNECTED;
 }
 
@@ -412,7 +485,6 @@ void app_main(void)
     if (ret != ESP_OK)
         ESP_LOGW(TAG, "Display init failed: %d", ret);
     display_set_pairing_id(g_identity.device_id);
-    display_set_rider_config(g_cal.mass_kg, 0);   // ftp_w=0 → use default 250W
 
     g_sensors_mutex = xSemaphoreCreateMutex();
     g_i2c1_mutex    = xSemaphoreCreateMutex();
@@ -453,6 +525,24 @@ void app_main(void)
     g_state = STATE_IDLE;
 
     while (1) {
+        if (g_btn_double_click) {
+            g_btn_double_click = false;
+            int64_t now = esp_timer_get_time();
+            g_session_start_us = now;
+            g_lap_start_us     = now;
+            g_current_lap      = 1;
+            display_set_screen(SCR_TIMER);
+            display_show_toast("LET'S GO!", 2000);
+            ESP_LOGI(TAG, "Sessione avviata manualmente");
+        }
+        if (g_btn_lap_click) {
+            g_btn_lap_click = false;
+            if (g_session_start_us > 0) {
+                g_current_lap++;
+                g_lap_start_us = esp_timer_get_time();
+                ESP_LOGI(TAG, "Nuovo lap da BTN_LAP → lap %d", g_current_lap);
+            }
+        }
         if (g_btn_long_press && !g_btn_very_long_press) {
             g_btn_long_press = false;
             do_calibration();
@@ -461,6 +551,11 @@ void app_main(void)
             g_btn_very_long_press = false;
             g_btn_long_press      = false;
             coach_cycle_mode();
+            {
+                const char *labels[] = {"WIFI OFF", "COACH DIRECT", "CO-OP WIFI"};
+                display_show_toast(labels[coach_get_mode()], 3000);
+            }
+            coach_apply_mode();
         }
         if (g_state == STATE_LOW_BATTERY) {
             ESP_LOGW(TAG, "Shutting down — battery critical");
