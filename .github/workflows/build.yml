@@ -25,6 +25,7 @@ jobs:
 
       - name: Rename binary
         run: |
+          sudo chmod -R a+rw build/
           cp build/aerodrag_firmware.bin build/aerodrag_firmware_$(git rev-parse --short HEAD).bin
 
       - name: Upload firmware binary
