@@ -241,6 +241,7 @@ static void fb_hline(int x0, int x1, int y, uint16_t col)
     for (int x=x0; x<=x1; x++) if (x>=0&&x<FB_W) PX(x,y)=col;
 }
 
+__attribute__((unused))
 static void fb_vline(int x, int y0, int y1, uint16_t col)
 {
     if (x<0||x>=FB_W) return;
@@ -397,7 +398,7 @@ static void fb_time(int x, int y, uint32_t secs, uint16_t col, int scale)
     char buf[6];
     uint32_t mm = secs / 60;
     if (mm > 99) mm = 99;
-    snprintf(buf, sizeof(buf), "%02d:%02d", mm, secs % 60);
+    snprintf(buf, sizeof(buf), "%02lu:%02lu", (unsigned long)mm, (unsigned long)(secs % 60));
     fb_str(x, y, buf, col, scale);
 }
 
