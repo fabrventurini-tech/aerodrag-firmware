@@ -11,6 +11,7 @@ idf_component_register(
         "../components/battery"
         "../components/wifi"
         "../components/ota"
+        "../managed_components/espressif__qrcode"
     REQUIRES
         nvs_flash
         driver
