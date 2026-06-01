@@ -518,7 +518,7 @@ switch (g_screen) {
         // ── Lap number ────────────────────────────────────────────────────────
         fb_str((FB_W - 36) / 2, 18, "LAP", COL_MUTED, 2);
         {
-            char nbuf[4];
+            char nbuf[6];
             snprintf(nbuf, sizeof(nbuf), "%d", g_lap_num_display);
             int nw = (int)strlen(nbuf) * 30;   // scale 5
             fb_str((FB_W - nw) / 2, 40, nbuf, COL_TEAL, 5);
