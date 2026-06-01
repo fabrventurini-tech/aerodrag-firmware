@@ -366,7 +366,7 @@ static bool     g_ble_connected      = false;
 static bool     g_wifi_ready         = false;
 static uint32_t g_session_elapsed_s  = 0;
 static uint32_t g_lap_elapsed_s      = 0;
-static uint8_t  g_lap_num_display    = 1;
+static uint16_t g_lap_num_display    = 1;
 
 // ─── Screen state ─────────────────────────────────────────────────────────────
 typedef enum { SCR_PAIRING=0, SCR_CDA, SCR_TIMER, SCR_POWER, SCR_STATUS, SCR_COUNT } screen_t;
@@ -637,7 +637,7 @@ void display_set_connection_status(bool ble, bool wifi)
     g_wifi_ready    = wifi;
 }
 
-void display_set_timers(uint32_t session_s, uint32_t lap_s, uint8_t lap_num)
+void display_set_timers(uint32_t session_s, uint32_t lap_s, uint16_t lap_num)
 {
     g_session_elapsed_s = session_s;
     g_lap_elapsed_s     = lap_s;

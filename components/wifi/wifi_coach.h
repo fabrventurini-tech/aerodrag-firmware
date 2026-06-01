@@ -57,7 +57,7 @@ typedef struct {
     coach_mode_t  mode;
 } coach_config_t;
 
-extern uint8_t g_current_lap;
+extern uint16_t g_current_lap;
 extern device_identity_t g_identity;
 
 static coach_config_t                g_cfg     = {0};
@@ -407,7 +407,7 @@ esp_err_t coach_apply_mode(void)
     return ESP_OK;
 }
 
-uint8_t          coach_get_lap(void)    { return g_current_lap; }
+uint16_t         coach_get_lap(void)    { return g_current_lap; }
 bool             coach_is_ready(void)   { return g_ws_ready; }
 coach_mode_t     coach_get_mode(void)   { return g_cfg.mode; }
 const char      *coach_get_ssid(void)   { return g_cfg.ssid; }

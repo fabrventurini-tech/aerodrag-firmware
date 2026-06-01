@@ -76,7 +76,7 @@ static SemaphoreHandle_t   g_i2c1_mutex    = NULL;
 
 static float g_cda_smooth = 0.0f;
 
-uint8_t g_current_lap = 1;
+uint16_t g_current_lap = 1;
 
 // Fix H3: inizializzato in app_main (non a 0) per evitare che il watchdog
 // deep-sleep scatti 10 minuti dopo il boot prima di qualsiasi sessione.
@@ -354,8 +354,8 @@ static void IRAM_ATTR btn_isr(void *arg)
 }
 
 // ─── Optional external button ISRs (GPIO17 / GPIO18) ────────────────────────
-static volatile int64_t g_btn_screen_press_us  = 0;
-static volatile int64_t g_btn_lap_press_us     = 0;
+static volatile int64_t g_btn_screen_press_us  = -1;
+static volatile int64_t g_btn_lap_press_us     = -1;
 static volatile int64_t g_btn_lap_last_tap_us  = 0;
 static volatile bool    g_btn_lap_click        = false;
 
@@ -365,8 +365,10 @@ static void IRAM_ATTR btn_screen_isr(void *arg)
     if (gpio_get_level(PIN_BTN_SCREEN) == 0) {
         g_btn_screen_press_us = now;
     } else {
-        if ((now - g_btn_screen_press_us) / 1000 >= 50)
+        if (g_btn_screen_press_us >= 0 &&
+            (now - g_btn_screen_press_us) / 1000 >= 50)
             g_screen_next = true;
+        g_btn_screen_press_us = -1;
     }
 }
 
@@ -376,7 +378,8 @@ static void IRAM_ATTR btn_lap_isr(void *arg)
     if (gpio_get_level(PIN_BTN_LAP) == 0) {
         g_btn_lap_press_us = now;
     } else {
-        if ((now - g_btn_lap_press_us) / 1000 >= 50) {
+        if (g_btn_lap_press_us >= 0 &&
+            (now - g_btn_lap_press_us) / 1000 >= 50) {
             if (g_btn_lap_last_tap_us > 0 &&
                 (now - g_btn_lap_last_tap_us) < 400000LL) {
                 g_btn_double_click    = true;
@@ -386,6 +389,7 @@ static void IRAM_ATTR btn_lap_isr(void *arg)
                 g_btn_lap_last_tap_us = now;
             }
         }
+        g_btn_lap_press_us = -1;
     }
 }
 
