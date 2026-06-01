@@ -9,5 +9,5 @@ idf_component_register(
         esp_timer
         esp_wifi
         esp_netif
-        espressif__qrcode
+        qrcode
 )
