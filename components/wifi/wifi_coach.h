@@ -259,8 +259,6 @@ esp_err_t coach_init(void)
         ESP_LOGE(COACH_TAG, "esp_netif_init failed: %d", netif_ret);
         return netif_ret;
     }
-    if (!esp_netif_get_handle_from_ifkey("WIFI_STA_DEF"))
-        esp_netif_create_default_wifi_sta();
 
     esp_err_t loop_ret = esp_event_loop_create_default();
     if (loop_ret != ESP_OK && loop_ret != ESP_ERR_INVALID_STATE) {
@@ -270,6 +268,9 @@ esp_err_t coach_init(void)
 
     wifi_init_config_t wifi_init = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&wifi_init));
+
+    if (!esp_netif_get_handle_from_ifkey("WIFI_STA_DEF"))
+        esp_netif_create_default_wifi_sta();
     esp_event_handler_instance_register(WIFI_EVENT,  ESP_EVENT_ANY_ID,    _wifi_handler, NULL, NULL);
     esp_event_handler_instance_register(IP_EVENT,    IP_EVENT_STA_GOT_IP, _wifi_handler, NULL, NULL);
 
@@ -340,8 +341,6 @@ static void _coach_connect_task(void *arg)
         vTaskDelete(NULL);
         return;
     }
-    if (!esp_netif_get_handle_from_ifkey("WIFI_STA_DEF"))
-        esp_netif_create_default_wifi_sta();
 
     r = esp_event_loop_create_default();
     if (r != ESP_OK && r != ESP_ERR_INVALID_STATE) {
@@ -356,6 +355,9 @@ static void _coach_connect_task(void *arg)
         vTaskDelete(NULL);
         return;
     }
+
+    if (!esp_netif_get_handle_from_ifkey("WIFI_STA_DEF"))
+        esp_netif_create_default_wifi_sta();
     esp_event_handler_instance_register(WIFI_EVENT,  ESP_EVENT_ANY_ID,    _wifi_handler, NULL, NULL);
     esp_event_handler_instance_register(IP_EVENT,    IP_EVENT_STA_GOT_IP, _wifi_handler, NULL, NULL);
 
