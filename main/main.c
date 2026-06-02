@@ -353,46 +353,6 @@ static void IRAM_ATTR btn_isr(void *arg)
     }
 }
 
-// ─── Optional external button ISRs (GPIO17 / GPIO18) ────────────────────────
-static volatile int64_t g_btn_screen_press_us  = -1;
-static volatile int64_t g_btn_lap_press_us     = -1;
-static volatile int64_t g_btn_lap_last_tap_us  = 0;
-static volatile bool    g_btn_lap_click        = false;
-
-static void IRAM_ATTR btn_screen_isr(void *arg)
-{
-    int64_t now = esp_timer_get_time();
-    if (gpio_get_level(PIN_BTN_SCREEN) == 0) {
-        g_btn_screen_press_us = now;
-    } else {
-        if (g_btn_screen_press_us >= 0 &&
-            (now - g_btn_screen_press_us) / 1000 >= 50)
-            g_screen_next = true;
-        g_btn_screen_press_us = -1;
-    }
-}
-
-static void IRAM_ATTR btn_lap_isr(void *arg)
-{
-    int64_t now = esp_timer_get_time();
-    if (gpio_get_level(PIN_BTN_LAP) == 0) {
-        g_btn_lap_press_us = now;
-    } else {
-        if (g_btn_lap_press_us >= 0 &&
-            (now - g_btn_lap_press_us) / 1000 >= 50) {
-            if (g_btn_lap_last_tap_us > 0 &&
-                (now - g_btn_lap_last_tap_us) < 400000LL) {
-                g_btn_double_click    = true;
-                g_btn_lap_last_tap_us = 0;
-            } else {
-                g_btn_lap_click       = true;
-                g_btn_lap_last_tap_us = now;
-            }
-        }
-        g_btn_lap_press_us = -1;
-    }
-}
-
 static void btn_init(void)
 {
     gpio_config_t io = {
@@ -403,18 +363,8 @@ static void btn_init(void)
     };
     gpio_config(&io);
 
-    gpio_config_t io_ext = {
-        .pin_bit_mask = (1ULL << PIN_BTN_SCREEN) | (1ULL << PIN_BTN_LAP),
-        .mode         = GPIO_MODE_INPUT,
-        .pull_up_en   = GPIO_PULLUP_ENABLE,
-        .intr_type    = GPIO_INTR_ANYEDGE,
-    };
-    gpio_config(&io_ext);
-
     gpio_install_isr_service(0);
-    gpio_isr_handler_add(PIN_BTN_USER,   btn_isr,        NULL);
-    gpio_isr_handler_add(PIN_BTN_SCREEN, btn_screen_isr, NULL);
-    gpio_isr_handler_add(PIN_BTN_LAP,    btn_lap_isr,    NULL);
+    gpio_isr_handler_add(PIN_BTN_USER, btn_isr, NULL);
 }
 
 // ─── Calibration procedure ───────────────────────────────────────────────────────────────────────────
@@ -534,14 +484,6 @@ void app_main(void)
             display_set_screen(SCR_TIMER);
             display_show_toast("LET'S GO!", 2000);
             ESP_LOGI(TAG, "Sessione avviata manualmente");
-        }
-        if (g_btn_lap_click) {
-            g_btn_lap_click = false;
-            if (g_session_start_us > 0) {
-                g_current_lap++;
-                g_lap_start_us = esp_timer_get_time();
-                ESP_LOGI(TAG, "Nuovo lap da BTN_LAP → lap %d", g_current_lap);
-            }
         }
         if (g_btn_long_press && !g_btn_very_long_press) {
             g_btn_long_press = false;

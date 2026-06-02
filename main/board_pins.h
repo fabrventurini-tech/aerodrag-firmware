@@ -51,13 +51,6 @@
 // ── Buttons ───────────────────────────────────────────────────────────────────
 #define PIN_BTN_BOOT      0    // BOOT button (GPIO0, active low)
 #define PIN_BTN_USER      0    // use BOOT for calibration / screen cycle
-// Optional external buttons (solder to header pads, internal pull-up, active low)
-#define PIN_BTN_SCREEN   17    // cycle screens         (= PIN_MOSFET1 pad, GPIO17)
-#define PIN_BTN_LAP      16    // new lap / start+reset (free header pin, GPIO16)
-
-// ── MOSFET pads (optional solder points) ─────────────────────────────────────
-#define PIN_MOSFET1      17    // used by PIN_BTN_SCREEN
-#define PIN_MOSFET2      18    // used by PIN_PITOT_SCL
 
 // ── I2C speeds ────────────────────────────────────────────────────────────────
 #define I2C0_SPEED_HZ   (400 * 1000)   // fast mode (touch + IMU)
