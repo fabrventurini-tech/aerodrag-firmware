@@ -410,8 +410,6 @@ void display_render(const aerodrag_sensors_t *s, const aerodrag_physics_t *p)
 
     fb_fill(COL_BG);
 
-    if (g_screen != SCR_PAIRING && g_screen != SCR_TIMER)
-        fb_ring(CX, CY, 116, 3, COL_SURFACE);
 
 switch (g_screen) {
 
