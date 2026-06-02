@@ -259,7 +259,8 @@ esp_err_t coach_init(void)
         ESP_LOGE(COACH_TAG, "esp_netif_init failed: %d", netif_ret);
         return netif_ret;
     }
-    esp_netif_create_default_wifi_sta();
+    if (!esp_netif_get_handle_from_ifkey("WIFI_STA_DEF"))
+        esp_netif_create_default_wifi_sta();
 
     esp_err_t loop_ret = esp_event_loop_create_default();
     if (loop_ret != ESP_OK && loop_ret != ESP_ERR_INVALID_STATE) {
@@ -339,7 +340,8 @@ static void _coach_connect_task(void *arg)
         vTaskDelete(NULL);
         return;
     }
-    esp_netif_create_default_wifi_sta();
+    if (!esp_netif_get_handle_from_ifkey("WIFI_STA_DEF"))
+        esp_netif_create_default_wifi_sta();
 
     r = esp_event_loop_create_default();
     if (r != ESP_OK && r != ESP_ERR_INVALID_STATE) {
