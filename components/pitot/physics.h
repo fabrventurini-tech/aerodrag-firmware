@@ -66,7 +66,8 @@ static inline aerodrag_physics_t physics_compute(
     float slope = sinf(pitch_rad);  // approximation valid for small angles
 
     // Power components
-    float p_rolling = CRR * mass * GRAVITY_MS2 * s->speed_ms;
+    float crr_val   = (cal && cal->crr > 0.0f) ? cal->crr : CRR;
+    float p_rolling = crr_val * mass * GRAVITY_MS2 * s->speed_ms;
     float p_gravity = mass * GRAVITY_MS2 * slope * s->speed_ms;
     float p_mech    = (float)s->power_w * (1.0f - MECH_EFF);
     float p_aero    = (float)s->power_w - p_rolling - p_gravity - p_mech;

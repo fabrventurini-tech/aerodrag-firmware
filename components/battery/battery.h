@@ -87,7 +87,8 @@ void battery_update(battery_t *bat)
 static const aerodrag_cal_t CAL_DEFAULT = {
     .pitot_offset_pa  = 0.0f,
     .imu_pitch_offset = 0.0f,
-    .mass_kg          = 80.0f,
+    .mass_kg          = 78.0f,
+    .crr              = 0.0040f,
     .cda_target       = 0.230f,
     .crc              = 0xDEADBEEF,
 };

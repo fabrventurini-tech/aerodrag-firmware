@@ -247,6 +247,7 @@ static void task_pitot_imu(void *arg)
             ESP_LOGI(TAG, "Sessione fermata da coach");
         }
 
+        ble_notify_physics(&phy);
         ble_notify_pitot(sensors_copy.pitot_pa, sensors_copy.static_pa);
         ble_notify_imu(sensors_copy.pitch_deg, sensors_copy.roll_deg);
 
@@ -441,7 +442,7 @@ void app_main(void)
     configASSERT(g_sensors_mutex);
     configASSERT(g_i2c1_mutex);
 
-    ESP_ERROR_CHECK(ble_server_init(&g_sensors, g_sensors_mutex));
+    ESP_ERROR_CHECK(ble_server_init(&g_sensors, g_sensors_mutex, &g_cal));
 
     esp_err_t coach_ret = coach_init();
     if (coach_ret == ESP_OK && coach_get_mode() != COACH_MODE_OFF)

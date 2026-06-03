@@ -97,7 +97,8 @@ typedef enum {
 typedef struct {
     float   pitot_offset_pa;
     float   imu_pitch_offset;
-    float   mass_kg;
+    float   mass_kg;          // kg  — set by app via BLE 0xaa08
+    float   crr;              // rolling resistance coeff — set by app via BLE 0xaa08
     float   cda_target;
     uint32_t crc;
 } aerodrag_cal_t;
