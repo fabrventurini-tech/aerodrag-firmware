@@ -764,7 +764,8 @@ switch (g_screen) {
             bool     cda_valid = (p && p->valid);
             float    cda_val   = cda_valid ? p->CdA : 0.0f;
             float    cpct = cda_valid ? (cda_val - 0.18f) / 0.20f : 0.0f;
-            if (cpct < 0.0f) cpct = 0.0f; if (cpct > 1.0f) cpct = 1.0f;
+            if (cpct < 0.0f) cpct = 0.0f;
+            if (cpct > 1.0f) cpct = 1.0f;
             uint16_t cda_col = (cpct < 0.33f) ? COL_TEAL
                              : (cpct < 0.67f) ? COL_AMBER : COL_RED;
             if (!cda_valid) cda_col = COL_MUTED;
