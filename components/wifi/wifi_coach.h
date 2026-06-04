@@ -135,7 +135,7 @@ static void _ws_handler(void *arg, esp_event_base_t base,
             snprintf(hello_buf, sizeof(hello_buf),
                 "{\"type\":\"hello\",\"device\":\"%s\",\"athlete\":\"%s\",\"fw\":\"%s\"}",
                 g_identity.device_id, g_identity.athlete_name, FW_VERSION_STR);
-            esp_websocket_client_send_text(g_ws, hello_buf, -1, pdMS_TO_TICKS(500));
+            esp_websocket_client_send_text(g_ws, hello_buf, (int)strlen(hello_buf), pdMS_TO_TICKS(500));
         }
         break;
     case WEBSOCKET_EVENT_DISCONNECTED:
