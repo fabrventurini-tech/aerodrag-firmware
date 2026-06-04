@@ -82,6 +82,20 @@ static void coach_handle_command(const char *data, int len);
 static esp_timer_handle_t g_wifi_reconnect_timer = NULL;
 static void _wifi_reconnect_cb(void *arg) { esp_wifi_connect(); }
 
+// Static IP — bypass DHCP to avoid BLE coexistence packet loss
+static void _coach_apply_static_ip(void)
+{
+    esp_netif_t *sta = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (!sta) return;
+    esp_netif_dhcpc_stop(sta);   // ignore ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED
+    esp_netif_ip_info_t ip = {0};
+    ip.ip.addr      = ESP_IP4TOADDR(192, 168, 8,   2);
+    ip.gw.addr      = ESP_IP4TOADDR(192, 168, 8,   1);
+    ip.netmask.addr = ESP_IP4TOADDR(255, 255, 255, 0);
+    esp_netif_set_ip_info(sta, &ip);
+    ESP_LOGI(COACH_TAG, "Static IP 192.168.8.2/24 gw 192.168.8.1");
+}
+
 static void _wifi_handler(void *arg, esp_event_base_t base,
                            int32_t id, void *data)
 {
@@ -271,6 +285,7 @@ esp_err_t coach_init(void)
 
     if (!esp_netif_get_handle_from_ifkey("WIFI_STA_DEF"))
         esp_netif_create_default_wifi_sta();
+    _coach_apply_static_ip();
     esp_event_handler_instance_register(WIFI_EVENT,  ESP_EVENT_ANY_ID,    _wifi_handler, NULL, NULL);
     esp_event_handler_instance_register(IP_EVENT,    IP_EVENT_STA_GOT_IP, _wifi_handler, NULL, NULL);
 
@@ -319,7 +334,7 @@ static void _coach_connect_task(void *arg)
     if (g_wifi_hw_started) {
         if (!g_ws) {
             char url[80];
-            snprintf(url, sizeof(url), "ws://%s:%d/coach", g_cfg.host, g_cfg.port);
+            snprintf(url, sizeof(url), "ws://%s:%d/device", g_cfg.host, g_cfg.port);
             esp_websocket_client_config_t wsc = {
                 .uri                  = url,
                 .reconnect_timeout_ms = 3000,
@@ -358,6 +373,7 @@ static void _coach_connect_task(void *arg)
 
     if (!esp_netif_get_handle_from_ifkey("WIFI_STA_DEF"))
         esp_netif_create_default_wifi_sta();
+    _coach_apply_static_ip();
     esp_event_handler_instance_register(WIFI_EVENT,  ESP_EVENT_ANY_ID,    _wifi_handler, NULL, NULL);
     esp_event_handler_instance_register(IP_EVENT,    IP_EVENT_STA_GOT_IP, _wifi_handler, NULL, NULL);
 
