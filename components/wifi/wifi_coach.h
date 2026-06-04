@@ -294,7 +294,7 @@ esp_err_t coach_init(void)
     }
 
     char url[80];
-    snprintf(url, sizeof(url), "ws://%s:%d/coach", g_cfg.host, g_cfg.port);
+    snprintf(url, sizeof(url), "ws://%s:%d/device", g_cfg.host, g_cfg.port);
     esp_websocket_client_config_t wsc = {
         .uri                  = url,
         .reconnect_timeout_ms = 3000,
@@ -383,7 +383,7 @@ static void _coach_connect_task(void *arg)
     }
 
     char url[80];
-    snprintf(url, sizeof(url), "ws://%s:%d/coach", g_cfg.host, g_cfg.port);
+    snprintf(url, sizeof(url), "ws://%s:%d/device", g_cfg.host, g_cfg.port);
     esp_websocket_client_config_t wsc = {
         .uri                  = url,
         .reconnect_timeout_ms = 3000,
