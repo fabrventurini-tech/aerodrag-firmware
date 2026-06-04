@@ -444,6 +444,9 @@ void app_main(void)
 
     ESP_ERROR_CHECK(ble_server_init(&g_sensors, g_sensors_mutex, &g_cal));
 
+    ble_sensors_init(g_sensors_mutex);
+    ESP_LOGI(TAG, "BLE Central (Power/CSC/HR) pronto");
+
     esp_err_t coach_ret = coach_init();
     if (coach_ret == ESP_OK && coach_get_mode() != COACH_MODE_OFF)
         ESP_LOGI(TAG, "Coach: %s → %s",
@@ -453,9 +456,6 @@ void app_main(void)
         ESP_LOGI(TAG, "Coach: OFF");
 
     coach_set_ble_lap_cb(ble_lap_notify_cb);
-
-    ble_sensors_init(g_sensors_mutex);
-    ESP_LOGI(TAG, "BLE Central (Power/CSC/HR) pronto");
 
     // Fix C1: task_pitot_imu creato una sola volta.
     // Il precedente codice lo creava due volte (refactoring incompleto di task_ant).
