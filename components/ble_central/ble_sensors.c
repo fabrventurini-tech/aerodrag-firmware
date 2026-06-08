@@ -399,6 +399,7 @@ static int central_gap_event(struct ble_gap_event *event, void *arg);
 static void start_scan(void);
 
 static esp_timer_handle_t s_scan_restart_timer = NULL;
+static volatile bool      s_scan_enabled = true;
 static void _scan_restart_cb(void *arg) { start_scan(); }
 
 /* Riavvia il scan dopo 2 s — lascia tempo a WiFi tra una sessione e l'altra */
@@ -414,6 +415,7 @@ static void start_scan_delayed(void) {
 }
 
 static void start_scan(void) {
+    if (!s_scan_enabled)       return;  /* scan sospeso (es. WiFi)  */
     if (!slot_idle())          return;  /* tutti gli slot occupati */
     if (ble_gap_disc_active()) return;  /* scan già in corso       */
 
@@ -615,6 +617,18 @@ void ble_sensors_on_sync(void) {
      */
     ESP_LOGI(TAG, "BLE Central pronto — avvio scan sensori");
     start_scan();
+}
+
+void ble_sensors_set_scan_enabled(bool enabled) {
+    s_scan_enabled = enabled;
+    if (enabled) {
+        ESP_LOGI(TAG, "Scan sensori riabilitato");
+        start_scan();
+    } else {
+        ESP_LOGI(TAG, "Scan sensori sospeso (handshake WiFi)");
+        if (s_scan_restart_timer) esp_timer_stop(s_scan_restart_timer);
+        if (ble_gap_disc_active()) ble_gap_disc_cancel();
+    }
 }
 
 void ble_sensors_get(ble_sensor_data_t *out) {

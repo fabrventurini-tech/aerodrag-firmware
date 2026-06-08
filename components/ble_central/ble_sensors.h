@@ -105,3 +105,13 @@ void ble_sensors_trigger_lap(void);
  * Chiamare prima di ble_sensors_on_sync() se necessario.
  */
 void ble_sensors_set_wheel_circumference(float meters);
+
+/*
+ * ble_sensors_set_scan_enabled()
+ * ------------------------------
+ * Abilita/disabilita il scan dei sensori. Quando disabilitato il scan
+ * attivo viene annullato e non riparte finché non si riabilita.
+ * Usato dal modulo coach per liberare la radio durante l'handshake WiFi
+ * iniziale (la coesistenza BLE/WiFi fa fallire l'auth se il scan è attivo).
+ */
+void ble_sensors_set_scan_enabled(bool enabled);
