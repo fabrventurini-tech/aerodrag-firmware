@@ -107,7 +107,9 @@ static void _wifi_handler(void *arg, esp_event_base_t base,
             esp_wifi_connect();
         } else if (id == WIFI_EVENT_STA_DISCONNECTED) {
             g_ws_ready = false;
-            ESP_LOGW(COACH_TAG, "WiFi perso — riconnessione tra 3s");
+            wifi_event_sta_disconnected_t *dd = (wifi_event_sta_disconnected_t *)data;
+            ESP_LOGW(COACH_TAG, "WiFi perso (reason=%d rssi=%d) — riconnessione tra 3s",
+                     dd ? dd->reason : -1, dd ? dd->rssi : 0);
             ble_sensors_set_scan_enabled(false);
             if (!g_wifi_reconnect_timer) {
                 const esp_timer_create_args_t ta = {
