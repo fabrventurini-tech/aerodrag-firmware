@@ -627,7 +627,7 @@ void ble_sensors_set_scan_enabled(bool enabled) {
     } else {
         ESP_LOGI(TAG, "Scan sensori sospeso (handshake WiFi)");
         if (s_scan_restart_timer) esp_timer_stop(s_scan_restart_timer);
-        if (ble_gap_disc_active()) ble_gap_disc_cancel();
+        if (ble_hs_synced() && ble_gap_disc_active()) ble_gap_disc_cancel();
     }
 }
 
