@@ -118,6 +118,19 @@ static void _wifi_handler(void *arg, esp_event_base_t base,
         ip_event_got_ip_t *e = (ip_event_got_ip_t *)data;
         ESP_LOGI(COACH_TAG, "IP: " IPSTR, IP2STR(&e->ip_info.ip));
         if (g_wifi_eg) xEventGroupSetBits(g_wifi_eg, WIFI_CONNECTED_BIT);
+        if (!g_ws) {
+            char url[80];
+            snprintf(url, sizeof(url), "ws://%s:%d/device", g_cfg.host, g_cfg.port);
+            esp_websocket_client_config_t wsc = {
+                .uri                  = url,
+                .reconnect_timeout_ms = 3000,
+                .network_timeout_ms   = 5000,
+            };
+            g_ws = esp_websocket_client_init(&wsc);
+            esp_websocket_register_events(g_ws, WEBSOCKET_EVENT_ANY, _ws_handler, NULL);
+            esp_websocket_client_start(g_ws);
+            ESP_LOGI(COACH_TAG, "WS avviato in ritardo dopo IP");
+        }
     }
 }
 
@@ -303,8 +316,7 @@ esp_err_t coach_init(void)
         WIFI_CONNECTED_BIT, pdFALSE, pdFALSE, pdMS_TO_TICKS(15000));
 
     if (!(bits & WIFI_CONNECTED_BIT)) {
-        ESP_LOGW(COACH_TAG, "Timeout WiFi — fallback BLE");
-        esp_wifi_stop();
+        ESP_LOGW(COACH_TAG, "Timeout WiFi — riprovo in background");
         return ESP_ERR_TIMEOUT;
     }
 
