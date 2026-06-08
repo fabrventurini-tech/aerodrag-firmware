@@ -400,6 +400,7 @@ static void start_scan(void);
 
 static esp_timer_handle_t s_scan_restart_timer = NULL;
 static volatile bool      s_scan_enabled = true;
+static volatile bool      s_nimble_synced = false;  /* true dopo on_sync */
 static void _scan_restart_cb(void *arg) { start_scan(); }
 
 /* Riavvia il scan dopo 2 s — lascia tempo a WiFi tra una sessione e l'altra */
@@ -616,6 +617,7 @@ void ble_sensors_on_sync(void) {
      * A questo punto NimBLE è sincronizzato — il scan è sicuro.
      */
     ESP_LOGI(TAG, "BLE Central pronto — avvio scan sensori");
+    s_nimble_synced = true;
     start_scan();
 }
 
@@ -623,11 +625,12 @@ void ble_sensors_set_scan_enabled(bool enabled) {
     s_scan_enabled = enabled;
     if (enabled) {
         ESP_LOGI(TAG, "Scan sensori riabilitato");
-        start_scan();
+        if (s_nimble_synced) start_scan();
     } else {
         ESP_LOGI(TAG, "Scan sensori sospeso (handshake WiFi)");
         if (s_scan_restart_timer) esp_timer_stop(s_scan_restart_timer);
-        if (ble_hs_synced() && ble_gap_disc_active()) ble_gap_disc_cancel();
+        /* Non chiamare API NimBLE prima della sync (host non inizializzato) */
+        if (s_nimble_synced && ble_gap_disc_active()) ble_gap_disc_cancel();
     }
 }
 
