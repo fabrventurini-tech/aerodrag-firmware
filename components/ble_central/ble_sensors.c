@@ -396,6 +396,7 @@ static int on_disc_svc(uint16_t conn_h,
 /* ─────────────────────────────────────────────────────────────────────────── */
 
 static int central_gap_event(struct ble_gap_event *event, void *arg);
+static void start_scan(void);
 
 static esp_timer_handle_t s_scan_restart_timer = NULL;
 static void _scan_restart_cb(void *arg) { start_scan(); }
