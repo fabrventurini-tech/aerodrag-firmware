@@ -22,6 +22,7 @@
 #include <math.h>
 
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -396,6 +397,21 @@ static int on_disc_svc(uint16_t conn_h,
 
 static int central_gap_event(struct ble_gap_event *event, void *arg);
 
+static esp_timer_handle_t s_scan_restart_timer = NULL;
+static void _scan_restart_cb(void *arg) { start_scan(); }
+
+/* Riavvia il scan dopo 2 s — lascia tempo a WiFi tra una sessione e l'altra */
+static void start_scan_delayed(void) {
+    if (!s_scan_restart_timer) {
+        const esp_timer_create_args_t ta = {
+            .callback = _scan_restart_cb,
+            .name     = "ble_scan_restart",
+        };
+        esp_timer_create(&ta, &s_scan_restart_timer);
+    }
+    esp_timer_start_once(s_scan_restart_timer, 2000000ULL); /* 2 s */
+}
+
 static void start_scan(void) {
     if (!slot_idle())          return;  /* tutti gli slot occupati */
     if (ble_gap_disc_active()) return;  /* scan già in corso       */
@@ -540,7 +556,7 @@ static int central_gap_event(struct ble_gap_event *event, void *arg) {
             }
             memset(slot, 0, sizeof(*slot));
         }
-        start_scan();
+        start_scan_delayed();
         break;
     }
 
@@ -568,8 +584,8 @@ static int central_gap_event(struct ble_gap_event *event, void *arg) {
 
     /* ── Scan completato senza target (timeout) ────────────────────────── */
     case BLE_GAP_EVENT_DISC_COMPLETE:
-        ESP_LOGD(TAG, "Scan completato, riavvio");
-        start_scan();
+        ESP_LOGD(TAG, "Scan completato, riavvio tra 2s");
+        start_scan_delayed();
         break;
 
     default:
