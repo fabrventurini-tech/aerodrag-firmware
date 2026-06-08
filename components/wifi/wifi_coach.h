@@ -96,6 +96,8 @@ static void _coach_apply_static_ip(void)
     ESP_LOGI(COACH_TAG, "Static IP 192.168.8.2/24 gw 192.168.8.1");
 }
 
+static void _ws_handler(void *arg, esp_event_base_t base, int32_t id, void *data);
+
 static void _wifi_handler(void *arg, esp_event_base_t base,
                            int32_t id, void *data)
 {
