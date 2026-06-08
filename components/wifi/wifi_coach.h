@@ -108,6 +108,7 @@ static void _wifi_handler(void *arg, esp_event_base_t base,
         } else if (id == WIFI_EVENT_STA_DISCONNECTED) {
             g_ws_ready = false;
             ESP_LOGW(COACH_TAG, "WiFi perso — riconnessione tra 3s");
+            ble_sensors_set_scan_enabled(false);
             if (!g_wifi_reconnect_timer) {
                 const esp_timer_create_args_t ta = {
                     .callback = _wifi_reconnect_cb,
@@ -310,11 +311,6 @@ esp_err_t coach_init(void)
     strlcpy((char*)wc.sta.password, g_cfg.pass, sizeof(wc.sta.password));
     wc.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
 
-    /* Sospendi il scan BLE: la coesistenza fa fallire l'handshake WPA2
-     * se la radio è occupata dallo scan durante l'associazione iniziale. */
-    if (g_cfg.mode == COACH_MODE_CO_OP)
-        ble_sensors_set_scan_enabled(false);
-
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
     ESP_ERROR_CHECK(esp_wifi_start());
@@ -322,10 +318,6 @@ esp_err_t coach_init(void)
 
     EventBits_t bits = xEventGroupWaitBits(g_wifi_eg,
         WIFI_CONNECTED_BIT, pdFALSE, pdFALSE, pdMS_TO_TICKS(15000));
-
-    /* Riprende il scan: connesso (link stabile) o timeout (fallback BLE) */
-    if (g_cfg.mode == COACH_MODE_CO_OP)
-        ble_sensors_set_scan_enabled(true);
 
     if (!(bits & WIFI_CONNECTED_BIT)) {
         ESP_LOGW(COACH_TAG, "Timeout WiFi — riprovo in background");

@@ -442,12 +442,20 @@ void app_main(void)
     configASSERT(g_sensors_mutex);
     configASSERT(g_i2c1_mutex);
 
-    ESP_ERROR_CHECK(ble_server_init(&g_sensors, g_sensors_mutex, &g_cal));
-
     ble_sensors_init(g_sensors_mutex);
+    /* Freeze scan before ble_server_init: on_sync fires on the NimBLE
+     * host task concurrently and would start a 50%-duty-cycle scan that
+     * starves the WPA2 4-way handshake under BLE/WiFi coexistence. */
+    ble_sensors_set_scan_enabled(false);
+
+    ESP_ERROR_CHECK(ble_server_init(&g_sensors, g_sensors_mutex, &g_cal));
     ESP_LOGI(TAG, "BLE Central (Power/CSC/HR) pronto");
 
     esp_err_t coach_ret = coach_init();
+    /* For OFF and timeout: scan resumes now. For success (ESP_OK):
+     * the GOT_IP handler already called set_scan_enabled(true) before
+     * coach_init() unblocked, so this is a harmless no-op. */
+    ble_sensors_set_scan_enabled(true);
     if (coach_ret == ESP_OK && coach_get_mode() != COACH_MODE_OFF)
         ESP_LOGI(TAG, "Coach: %s → %s",
                  coach_get_mode() == COACH_MODE_COACH_DIRECT ? "COACH DIRECT" : "COACH CO-OP",
