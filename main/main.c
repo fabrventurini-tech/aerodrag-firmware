@@ -117,10 +117,15 @@ static int64_t g_last_cad_us   = 0;
 #define BLE_SPEED_STALE_US  (5LL * 1000 * 1000)
 
 // ─── Task: Pitot + IMU @ 10 Hz ───────────────────────────────────────────────────────────────────────
+// Letture I2C fallite consecutive prima di invalidare il sensore (~1 s a 10 Hz)
+#define SENSOR_FAIL_LIMIT 10
+
 static void task_pitot_imu(void *arg)
 {
     TickType_t wake = xTaskGetTickCount();
     uint8_t env_divider = 0;
+    uint8_t pitot_fail  = 0;
+    uint8_t imu_fail    = 0;
 
     while (1) {
         vTaskDelayUntil(&wake, pdMS_TO_TICKS(100));
@@ -204,22 +209,35 @@ static void task_pitot_imu(void *arg)
             imu_ok    = true;
         }
 
+        bool pitot_lost = false, imu_lost = false;
+
         SENSORS_LOCK();
         if (pitot_ret == ESP_OK) {
             g_sensors.pitot_pa    = g_pitot.pressure_pa;
             g_sensors.static_pa   = 101325.0f;
             g_sensors.pitot_valid = true;
             g_sensors.temp_c      = g_pitot.temp_c;
+            pitot_fail            = 0;
+        } else if (pitot_fail < SENSOR_FAIL_LIMIT && ++pitot_fail == SENSOR_FAIL_LIMIT) {
+            g_sensors.pitot_valid = false;
+            pitot_lost            = true;
         }
         if (imu_ok) {
             g_sensors.pitch_deg = imu_pitch;
             g_sensors.roll_deg  = imu_roll;
             if (!g_sensors.pitot_valid) g_sensors.temp_c = imu_temp;
             g_sensors.imu_valid = true;
+            imu_fail            = 0;
+        } else if (imu_fail < SENSOR_FAIL_LIMIT && ++imu_fail == SENSOR_FAIL_LIMIT) {
+            g_sensors.imu_valid = false;
+            imu_lost            = true;
         }
 
         aerodrag_sensors_t sensors_copy = g_sensors;
         SENSORS_UNLOCK();
+
+        if (pitot_lost) ESP_LOGW(TAG, "Pitot: %d letture fallite — invalidato", SENSOR_FAIL_LIMIT);
+        if (imu_lost)   ESP_LOGW(TAG, "IMU: %d letture fallite — invalidato",   SENSOR_FAIL_LIMIT);
 
         aerodrag_physics_t phy = physics_compute(&sensors_copy, &g_cal);
 

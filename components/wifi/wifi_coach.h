@@ -109,6 +109,10 @@ static void _coach_ws_start(void)
         .network_timeout_ms   = 5000,
     };
     g_ws = esp_websocket_client_init(&wsc);
+    if (!g_ws) {
+        ESP_LOGE(COACH_TAG, "esp_websocket_client_init failed");
+        return;
+    }
     esp_websocket_register_events(g_ws, WEBSOCKET_EVENT_ANY, _ws_handler, NULL);
     esp_websocket_client_start(g_ws);
 }
@@ -148,8 +152,12 @@ static void _wifi_handler(void *arg, esp_event_base_t base,
          * resterebbe disabilitato per sempre (disabilitato in
          * STA_DISCONNECTED e mai più riattivato). */
         ble_sensors_set_scan_enabled(true);
-        if (g_wifi_eg) xEventGroupSetBits(g_wifi_eg, WIFI_CONNECTED_BIT);
+        /* WS creato PRIMA di segnalare il bit: coach_init è in attesa su
+         * WIFI_CONNECTED_BIT e chiama anch'esso _coach_ws_start — se il bit
+         * fosse settato prima, potrebbe vedere g_ws ancora NULL e creare
+         * un secondo client. */
         _coach_ws_start();
+        if (g_wifi_eg) xEventGroupSetBits(g_wifi_eg, WIFI_CONNECTED_BIT);
     }
 }
 
