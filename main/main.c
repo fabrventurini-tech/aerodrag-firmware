@@ -510,6 +510,7 @@ void app_main(void)
     configASSERT(g_i2c1_mutex);
 
     ble_sensors_init(g_sensors_mutex);
+    ble_sensors_set_wheel_circumference(g_cal.wheel_circ_m);
     /* Freeze scan before ble_server_init: on_sync fires on the NimBLE
      * host task concurrently and would start a 50%-duty-cycle scan that
      * starves the WPA2 4-way handshake under BLE/WiFi coexistence. */

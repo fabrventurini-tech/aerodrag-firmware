@@ -51,7 +51,7 @@ static const ble_uuid128_t CHR_OTA_URL = BLE_UUID128_INIT(
     0xfb, 0x34, 0x9b, 0x5f, 0x80, 0x00, 0x00, 0x80,
     0x00, 0x10, 0x00, 0x00, 0x07, 0xaa, 0x00, 0x00);
 
-// CONFIG (0xaa08): massKg [float32] + crr [float32] — WRITE WITH RESPONSE
+// CONFIG (0xaa08): massKg + crr + wheelCircM [3× float32] — READ + WRITE
 static const ble_uuid128_t CHR_CONFIG = BLE_UUID128_INIT(
     0xfb, 0x34, 0x9b, 0x5f, 0x80, 0x00, 0x00, 0x80,
     0x00, 0x10, 0x00, 0x00, 0x08, 0xaa, 0x00, 0x00);
@@ -262,22 +262,31 @@ static int version_ota_access_cb(uint16_t conn_handle, uint16_t attr_handle,
     return 0;
 }
 
-// ─── CONFIG (0xaa08) callback — WRITE WITH RESPONSE ──────────────────────────
-// Payload: float32 massKg [0..3] + float32 crr [4..7], little-endian
+// ─── CONFIG (0xaa08) callback — READ + WRITE WITH RESPONSE ───────────────────
+// Payload: float32 massKg [0..3] + float32 crr [4..7] + float32 wheelCircM
+// [8..11], little-endian. Write da 8 byte (formato v1.0, solo mass+crr)
+// ancora accettata: la circonferenza resta invariata.
 extern esp_err_t cal_save(const aerodrag_cal_t *cal);
 
 static int config_access_cb(uint16_t conn_handle, uint16_t attr_handle,
                              struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
     (void)conn_handle; (void)attr_handle; (void)arg;
-    if (ctxt->op != BLE_GATT_ACCESS_OP_WRITE_CHR) return 0;
     if (!g_cal_ptr) return BLE_ATT_ERR_UNLIKELY;
+
+    if (ctxt->op == BLE_GATT_ACCESS_OP_READ_CHR) {
+        float vals[3] = { g_cal_ptr->mass_kg, g_cal_ptr->crr,
+                          g_cal_ptr->wheel_circ_m };
+        os_mbuf_append(ctxt->om, vals, sizeof(vals));
+        return 0;
+    }
+    if (ctxt->op != BLE_GATT_ACCESS_OP_WRITE_CHR) return 0;
 
     uint16_t len = OS_MBUF_PKTLEN(ctxt->om);
     if (len < 8) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
 
-    uint8_t buf[8];
-    os_mbuf_copydata(ctxt->om, 0, 8, buf);
+    uint8_t buf[12];
+    os_mbuf_copydata(ctxt->om, 0, (len < 12) ? len : 12, buf);
 
     float mass_kg, crr;
     memcpy(&mass_kg, buf + 0, 4);
@@ -286,11 +295,20 @@ static int config_access_cb(uint16_t conn_handle, uint16_t attr_handle,
     if (mass_kg < 33.0f || mass_kg > 200.0f) return BLE_ATT_ERR_VALUE_NOT_ALLOWED;
     if (crr < 0.001f    || crr > 0.025f)     return BLE_ATT_ERR_VALUE_NOT_ALLOWED;
 
-    g_cal_ptr->mass_kg = mass_kg;
-    g_cal_ptr->crr     = crr;
-    cal_save(g_cal_ptr);
+    float wheel_m = g_cal_ptr->wheel_circ_m;
+    if (len >= 12) {
+        memcpy(&wheel_m, buf + 8, 4);
+        if (wheel_m < 1.0f || wheel_m > 2.5f) return BLE_ATT_ERR_VALUE_NOT_ALLOWED;
+    }
 
-    ESP_LOGI("ble_cfg", "Config updated: mass=%.1f kg  crr=%.4f", mass_kg, crr);
+    g_cal_ptr->mass_kg      = mass_kg;
+    g_cal_ptr->crr          = crr;
+    g_cal_ptr->wheel_circ_m = wheel_m;
+    cal_save(g_cal_ptr);
+    ble_sensors_set_wheel_circumference(wheel_m);
+
+    ESP_LOGI("ble_cfg", "Config updated: mass=%.1f kg  crr=%.4f  wheel=%.3f m",
+             mass_kg, crr, wheel_m);
     return 0;
 }
 
@@ -343,11 +361,11 @@ static const struct ble_gatt_svc_def GATT_SERVICES[] = {
                 .flags      = BLE_GATT_CHR_F_WRITE,
             },
             {
-                // Config: massKg (float32) + crr (float32) — WRITE WITH RESPONSE
+                // Config: massKg + crr + wheelCircM (3× float32) — READ + WRITE
                 .uuid       = &CHR_CONFIG.u,
                 .access_cb  = config_access_cb,
                 .val_handle = &g_chr_config_h,
-                .flags      = BLE_GATT_CHR_F_WRITE,
+                .flags      = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE,
             },
             {
                 // Physics output: 28 bytes, NOTIFY 10 Hz

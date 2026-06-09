@@ -90,6 +90,7 @@ static const aerodrag_cal_t CAL_DEFAULT = {
     .mass_kg          = 78.0f,
     .crr              = 0.0040f,
     .cda_target       = 0.230f,
+    .wheel_circ_m     = 2.105f,   // 700c x 25mm
     .crc              = 0xDEADBEEF,
 };
 
@@ -105,6 +106,9 @@ esp_err_t cal_load(aerodrag_cal_t *cal)
         *cal = CAL_DEFAULT;
         return ESP_ERR_NOT_FOUND;
     }
+    // Blob salvato da un firmware senza wheel_circ_m (o corrotto): default
+    if (cal->wheel_circ_m < 1.0f || cal->wheel_circ_m > 2.5f)
+        cal->wheel_circ_m = CAL_DEFAULT.wheel_circ_m;
     return ESP_OK;
 }
 
