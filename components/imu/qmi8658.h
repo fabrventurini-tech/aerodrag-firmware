@@ -73,20 +73,6 @@ esp_err_t qmi8658_init(qmi8658_t *dev, i2c_port_t port, uint8_t addr)
     qmi_write(dev, QMI8658_REG_CTRL7, 0x03);
     vTaskDelay(pdMS_TO_TICKS(50));
     return ESP_OK;
-    vTaskDelay(pdMS_TO_TICKS(10));
-
-    // Acc: ±8g, 125Hz, low-pass filter enabled
-    qmi_write(dev, QMI8658_REG_CTRL2,
-              (QMI8658_ACC_RANGE_8G << 4) | QMI8658_ACC_ODR_125HZ);
-    // Gyro: ±512dps, 125Hz
-    qmi_write(dev, QMI8658_REG_CTRL3,
-              (QMI8658_GYR_RANGE_512 << 4) | QMI8658_GYR_ODR_125HZ);
-
-    // Enable both sensors
-    qmi_write(dev, QMI8658_REG_CTRL7, 0x03);
-    vTaskDelay(pdMS_TO_TICKS(50));
-
-    return ESP_OK;
 }
 
 // Complementary filter: α = 0.96 (gyro weight), (1-α) = acc weight

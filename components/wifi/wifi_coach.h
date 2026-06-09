@@ -75,9 +75,6 @@ volatile uint8_t g_coach_mode_display = 0;
 #define WIFI_CONNECTED_BIT  BIT0
 #define WIFI_FAIL_BIT       BIT1
 
-static void (*g_ble_lap_cb)(void) = NULL;
-void coach_set_ble_lap_cb(void (*cb)(void)) { g_ble_lap_cb = cb; }
-
 static void coach_handle_command(const char *data, int len);
 
 static esp_timer_handle_t g_wifi_reconnect_timer = NULL;
@@ -99,6 +96,23 @@ static void _coach_apply_static_ip(void)
 
 static void _ws_handler(void *arg, esp_event_base_t base, int32_t id, void *data);
 
+/* Crea e avvia il client WebSocket una sola volta — chiamabile sia dal
+ * GOT_IP handler che da coach_init/_coach_connect_task senza duplicarlo. */
+static void _coach_ws_start(void)
+{
+    if (g_ws) return;
+    char url[80];
+    snprintf(url, sizeof(url), "ws://%s:%d/device", g_cfg.host, g_cfg.port);
+    esp_websocket_client_config_t wsc = {
+        .uri                  = url,
+        .reconnect_timeout_ms = 3000,
+        .network_timeout_ms   = 5000,
+    };
+    g_ws = esp_websocket_client_init(&wsc);
+    esp_websocket_register_events(g_ws, WEBSOCKET_EVENT_ANY, _ws_handler, NULL);
+    esp_websocket_client_start(g_ws);
+}
+
 static void _wifi_handler(void *arg, esp_event_base_t base,
                            int32_t id, void *data)
 {
@@ -107,6 +121,12 @@ static void _wifi_handler(void *arg, esp_event_base_t base,
             esp_wifi_connect();
         } else if (id == WIFI_EVENT_STA_DISCONNECTED) {
             g_ws_ready = false;
+            if (g_cfg.mode == COACH_MODE_OFF) {
+                /* WiFi in spegnimento (coach_apply_mode → OFF):
+                 * niente riconnessione, lo scan BLE resta attivo. */
+                ble_sensors_set_scan_enabled(true);
+                return;
+            }
             wifi_event_sta_disconnected_t *dd = (wifi_event_sta_disconnected_t *)data;
             ESP_LOGW(COACH_TAG, "WiFi perso (reason=%d rssi=%d) — riconnessione tra 3s",
                      dd ? dd->reason : -1, dd ? dd->rssi : 0);
@@ -123,20 +143,13 @@ static void _wifi_handler(void *arg, esp_event_base_t base,
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *e = (ip_event_got_ip_t *)data;
         ESP_LOGI(COACH_TAG, "IP: " IPSTR, IP2STR(&e->ip_info.ip));
+        /* Handshake WPA2 completato — lo scan BLE può ripartire.
+         * Senza questa chiamata, dopo il primo drop WiFi lo scan
+         * resterebbe disabilitato per sempre (disabilitato in
+         * STA_DISCONNECTED e mai più riattivato). */
+        ble_sensors_set_scan_enabled(true);
         if (g_wifi_eg) xEventGroupSetBits(g_wifi_eg, WIFI_CONNECTED_BIT);
-        if (!g_ws) {
-            char url[80];
-            snprintf(url, sizeof(url), "ws://%s:%d/device", g_cfg.host, g_cfg.port);
-            esp_websocket_client_config_t wsc = {
-                .uri                  = url,
-                .reconnect_timeout_ms = 3000,
-                .network_timeout_ms   = 5000,
-            };
-            g_ws = esp_websocket_client_init(&wsc);
-            esp_websocket_register_events(g_ws, WEBSOCKET_EVENT_ANY, _ws_handler, NULL);
-            esp_websocket_client_start(g_ws);
-            ESP_LOGI(COACH_TAG, "WS avviato in ritardo dopo IP");
-        }
+        _coach_ws_start();
     }
 }
 
@@ -326,16 +339,10 @@ esp_err_t coach_init(void)
         return ESP_ERR_TIMEOUT;
     }
 
-    char url[80];
-    snprintf(url, sizeof(url), "ws://%s:%d/device", g_cfg.host, g_cfg.port);
-    esp_websocket_client_config_t wsc = {
-        .uri                  = url,
-        .reconnect_timeout_ms = 3000,
-        .network_timeout_ms   = 5000,
-    };
-    g_ws = esp_websocket_client_init(&wsc);
-    esp_websocket_register_events(g_ws, WEBSOCKET_EVENT_ANY, _ws_handler, NULL);
-    return esp_websocket_client_start(g_ws);
+    /* Il GOT_IP handler ha quasi certamente già creato il client:
+     * _coach_ws_start è idempotente, niente doppio init. */
+    _coach_ws_start();
+    return ESP_OK;
 }
 
 void coach_cycle_mode(void)
@@ -350,18 +357,7 @@ void coach_cycle_mode(void)
 static void _coach_connect_task(void *arg)
 {
     if (g_wifi_hw_started) {
-        if (!g_ws) {
-            char url[80];
-            snprintf(url, sizeof(url), "ws://%s:%d/device", g_cfg.host, g_cfg.port);
-            esp_websocket_client_config_t wsc = {
-                .uri                  = url,
-                .reconnect_timeout_ms = 3000,
-                .network_timeout_ms   = 5000,
-            };
-            g_ws = esp_websocket_client_init(&wsc);
-            esp_websocket_register_events(g_ws, WEBSOCKET_EVENT_ANY, _ws_handler, NULL);
-            esp_websocket_client_start(g_ws);
-        }
+        _coach_ws_start();
         vTaskDelete(NULL);
         return;
     }
@@ -416,16 +412,7 @@ static void _coach_connect_task(void *arg)
         return;
     }
 
-    char url[80];
-    snprintf(url, sizeof(url), "ws://%s:%d/device", g_cfg.host, g_cfg.port);
-    esp_websocket_client_config_t wsc = {
-        .uri                  = url,
-        .reconnect_timeout_ms = 3000,
-        .network_timeout_ms   = 5000,
-    };
-    g_ws = esp_websocket_client_init(&wsc);
-    esp_websocket_register_events(g_ws, WEBSOCKET_EVENT_ANY, _ws_handler, NULL);
-    esp_websocket_client_start(g_ws);
+    _coach_ws_start();
     vTaskDelete(NULL);
 }
 
@@ -433,12 +420,18 @@ esp_err_t coach_apply_mode(void)
 {
     coach_config_load(&g_cfg);
     if (g_cfg.mode == COACH_MODE_OFF) {
+        if (g_wifi_reconnect_timer) esp_timer_stop(g_wifi_reconnect_timer);
         if (g_ws) {
             esp_websocket_client_stop(g_ws);
             esp_websocket_client_destroy(g_ws);
             g_ws = NULL;
         }
         g_ws_ready = false;
+        if (g_wifi_hw_started) {
+            esp_wifi_stop();           /* OFF = radio WiFi davvero spenta */
+            g_wifi_hw_started = false;
+        }
+        ble_sensors_set_scan_enabled(true);
         return ESP_OK;
     }
     xTaskCreate(_coach_connect_task, "coach_conn", 4096, NULL, 3, NULL);

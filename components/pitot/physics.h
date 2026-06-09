@@ -109,5 +109,5 @@ static inline float ema_update(float prev, float new_val, float alpha)
     return alpha * new_val + (1.0f - alpha) * prev;
 }
 
-#define EMA_ALPHA_30S  (1.0f / 30.0f)   // 30-sample window at 1 Hz
+#define EMA_ALPHA_30S  (1.0f / 30.0f)   // 30 campioni: ~3 s a 10 Hz (task_pitot_imu)
 #define EMA_ALPHA_5S   (1.0f / 5.0f)

@@ -43,7 +43,7 @@ typedef struct {
     uint8_t  cadence_rpm;   /* cadenza [rpm]                            */
     uint8_t  hr_bpm;        /* freq. cardiaca [bpm]                     */
     uint16_t speed_cms;     /* velocità [cm/s], da CSC wheel revs       */
-    uint16_t distance_m;    /* distanza cumulativa [m] — wrappa a 65km  */
+    uint32_t distance_m;    /* distanza cumulativa [m]                  */
     uint8_t  status;        /* maschera di bit BLE_SENS_*               */
     bool     lap_event;     /* true = LAP ricevuto, resettato dopo read  */
 } ble_sensor_data_t;

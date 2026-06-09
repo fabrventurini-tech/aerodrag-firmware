@@ -217,8 +217,7 @@ static void parse_csc_meas(const uint8_t *d, uint16_t len) {
                 float speed_ms = (float)dr * s_wheel_circ_m * 1024.0f / (float)dt;
                 if (speed_ms > 0.5f && speed_ms < 30.0f) {  /* 1.8 km/h – 108 km/h */
                     s_data.speed_cms  = (uint16_t)(speed_ms * 100.0f);
-                    /* distanza cumulativa — wrappa a ~65535m = 65km */
-                    s_data.distance_m = (uint16_t)((float)wr * s_wheel_circ_m);
+                    s_data.distance_m = (uint32_t)((float)wr * s_wheel_circ_m);
                     s_data.status    |= BLE_SENS_SPEED;
                 }
             }

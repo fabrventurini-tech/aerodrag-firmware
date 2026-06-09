@@ -90,8 +90,6 @@ static volatile int64_t g_lap_start_us     = -1;
 #define I2C1_LOCK()       xSemaphoreTake(g_i2c1_mutex, portMAX_DELAY)
 #define I2C1_UNLOCK()     xSemaphoreGive(g_i2c1_mutex)
 
-static void ble_lap_notify_cb(void) { ble_notify_ant(0xFFFF, 0, 0); }
-
 static esp_err_t i2c_init_bus(i2c_port_t port, int sda, int scl, uint32_t hz)
 {
     i2c_config_t cfg = {
@@ -113,6 +111,9 @@ static qmi8658_t g_imu   = {0};
 static battery_t g_bat   = {0};
 
 static int64_t g_last_speed_us = 0;
+static int64_t g_last_power_us = 0;
+static int64_t g_last_hr_us    = 0;
+static int64_t g_last_cad_us   = 0;
 #define BLE_SPEED_STALE_US  (5LL * 1000 * 1000)
 
 // ─── Task: Pitot + IMU @ 10 Hz ───────────────────────────────────────────────────────────────────────
@@ -141,6 +142,38 @@ static void task_pitot_imu(void *arg)
                 ESP_LOGW("ble_sens", "Speed BLE stale — invalidato (>5s)");
             }
 
+            if (ext.status & BLE_SENS_POWER) {
+                g_last_power_us = now_us;
+            } else if (g_last_power_us > 0 &&
+                       (now_us - g_last_power_us) > BLE_SPEED_STALE_US) {
+                SENSORS_LOCK();
+                g_sensors.ant_valid = false;
+                g_sensors.power_w   = 0;
+                SENSORS_UNLOCK();
+                g_last_power_us = 0;
+                ESP_LOGW("ble_sens", "Power BLE stale — invalidato (>5s)");
+            }
+
+            if (ext.status & BLE_SENS_HR) {
+                g_last_hr_us = now_us;
+            } else if (g_last_hr_us > 0 &&
+                       (now_us - g_last_hr_us) > BLE_SPEED_STALE_US) {
+                SENSORS_LOCK();
+                g_sensors.hr_bpm = 0;
+                SENSORS_UNLOCK();
+                g_last_hr_us = 0;
+            }
+
+            if (ext.status & BLE_SENS_CAD) {
+                g_last_cad_us = now_us;
+            } else if (g_last_cad_us > 0 &&
+                       (now_us - g_last_cad_us) > BLE_SPEED_STALE_US) {
+                SENSORS_LOCK();
+                g_sensors.cadence_rpm = 0;
+                SENSORS_UNLOCK();
+                g_last_cad_us = 0;
+            }
+
             SENSORS_LOCK();
             if (ext.status & BLE_SENS_POWER) {
                 g_sensors.power_w   = ext.power_w;
@@ -160,7 +193,7 @@ static void task_pitot_imu(void *arg)
         I2C1_LOCK();
         esp_err_t pitot_ret = sdp810_read(&g_pitot);
         I2C1_UNLOCK();
-        ESP_LOGI("PITOT", "Pa=%.3f ret=%d", g_pitot.pressure_pa, pitot_ret);
+        ESP_LOGD("PITOT", "Pa=%.3f ret=%d", g_pitot.pressure_pa, pitot_ret);
 
         float imu_pitch = 0, imu_roll = 0, imu_temp = 0;
         bool  imu_ok = false;
@@ -238,7 +271,12 @@ static void task_pitot_imu(void *arg)
 
         if (g_coach_start_cmd) {
             g_coach_start_cmd = false;
+            int64_t now = esp_timer_get_time();
+            g_session_start_us = now;
+            g_lap_start_us     = now;
+            g_current_lap      = 1;
             g_state = STATE_RECORDING;
+            display_set_screen(SCR_TIMER);
             ESP_LOGI(TAG, "Sessione avviata da coach");
         }
         if (g_coach_stop_cmd) {
@@ -292,6 +330,17 @@ static void task_display(void *arg)
     }
 }
 
+// ─── Power off ────────────────────────────────────────────────────────────────
+// esp_deep_sleep(0) imposta un wakeup timer a 0 µs → reboot immediato.
+// Lo spegnimento reale avviene rilasciando PWR_HOLD (taglia l'alimentazione);
+// il deep sleep senza sorgenti di wakeup è il fallback quando si è sotto USB.
+static void power_off(void)
+{
+    gpio_set_level(PIN_PWR_HOLD, 0);
+    vTaskDelay(pdMS_TO_TICKS(200));
+    esp_deep_sleep_start();
+}
+
 // ─── Task: Battery + housekeeping @ 0.1 Hz ────────────────────────────────────────────────────
 static void task_housekeeping(void *arg)
 {
@@ -317,8 +366,8 @@ static void task_housekeeping(void *arg)
             g_last_activity_us = now;  // impedisci sleep durante OTA
 
         if (!ble_is_connected() && (now - g_last_activity_us) > SLEEP_TIMEOUT_US) {
-            ESP_LOGI(TAG, "Inactivity timeout — deep sleep");
-            esp_deep_sleep(0);
+            ESP_LOGI(TAG, "Inactivity timeout — power off");
+            power_off();
         }
     }
 }
@@ -421,7 +470,7 @@ void app_main(void)
 
     ret = sdp810_init(&g_pitot, PITOT_I2C_PORT, PITOT_I2C_ADDR);
     if (ret != ESP_OK)
-        ESP_LOGW(TAG, "SDP810 not found (%.2X) — pitot disabled", ret);
+        ESP_LOGW(TAG, "SDP810 not found (%s) — pitot disabled", esp_err_to_name(ret));
 
     ret = qmi8658_init(&g_imu, IMU_I2C_PORT, IMU_I2C_ADDR);
     if (ret != ESP_OK)
@@ -453,8 +502,8 @@ void app_main(void)
 
     esp_err_t coach_ret = coach_init();
     /* For OFF and timeout: scan resumes now. For success (ESP_OK):
-     * the GOT_IP handler already called set_scan_enabled(true) before
-     * coach_init() unblocked, so this is a harmless no-op. */
+     * the GOT_IP handler in wifi_coach.h re-enables the scan, so this
+     * is a harmless no-op. */
     ble_sensors_set_scan_enabled(true);
     if (coach_ret == ESP_OK && coach_get_mode() != COACH_MODE_OFF)
         ESP_LOGI(TAG, "Coach: %s → %s",
@@ -463,14 +512,12 @@ void app_main(void)
     else if (coach_get_mode() == COACH_MODE_OFF)
         ESP_LOGI(TAG, "Coach: OFF");
 
-    coach_set_ble_lap_cb(ble_lap_notify_cb);
-
     // Fix C1: task_pitot_imu creato una sola volta.
     // Il precedente codice lo creava due volte (refactoring incompleto di task_ant).
     btn_init();
     xTaskCreatePinnedToCore(task_pitot_imu,    "pitot_imu",  4096, NULL, 5, NULL, APP_CPU_NUM);
     xTaskCreatePinnedToCore(task_display,      "display",    8192, NULL, 2, NULL, PRO_CPU_NUM);
-    xTaskCreatePinnedToCore(task_housekeeping, "housekeep",  2048, NULL, 1, NULL, PRO_CPU_NUM);
+    xTaskCreatePinnedToCore(task_housekeeping, "housekeep",  3072, NULL, 1, NULL, PRO_CPU_NUM);
 
     // Fix H3: il watchdog parte dal completamento del boot, non dal valore 0.
     g_last_activity_us = esp_timer_get_time();
@@ -512,7 +559,7 @@ void app_main(void)
             ESP_LOGW(TAG, "Shutting down — battery critical");
             sdp810_stop(&g_pitot);
             vTaskDelay(pdMS_TO_TICKS(500));
-            esp_deep_sleep(0);
+            power_off();
         }
         vTaskDelay(pdMS_TO_TICKS(100));
     }
