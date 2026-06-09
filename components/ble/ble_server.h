@@ -292,14 +292,23 @@ static int config_access_cb(uint16_t conn_handle, uint16_t attr_handle,
     memcpy(&mass_kg, buf + 0, 4);
     memcpy(&crr,     buf + 4, 4);
 
-    if (mass_kg < 33.0f || mass_kg > 200.0f) return BLE_ATT_ERR_VALUE_NOT_ALLOWED;
-    if (crr < 0.001f    || crr > 0.025f)     return BLE_ATT_ERR_VALUE_NOT_ALLOWED;
+    // Forma !(x >= lo && x <= hi): respinge anche NaN, che con
+    // (x < lo || x > hi) passerebbe la validazione
+    if (!(mass_kg >= 33.0f && mass_kg <= 200.0f)) return BLE_ATT_ERR_VALUE_NOT_ALLOWED;
+    if (!(crr >= 0.001f && crr <= 0.025f))        return BLE_ATT_ERR_VALUE_NOT_ALLOWED;
 
     float wheel_m = g_cal_ptr->wheel_circ_m;
     if (len >= 12) {
         memcpy(&wheel_m, buf + 8, 4);
-        if (wheel_m < 1.0f || wheel_m > 2.5f) return BLE_ATT_ERR_VALUE_NOT_ALLOWED;
+        if (!(wheel_m >= 1.0f && wheel_m <= 2.5f)) return BLE_ATT_ERR_VALUE_NOT_ALLOWED;
     }
+
+    /* Write identica alla config corrente: ACK senza toccare la NVS.
+     * L'app riscrive la config a ogni connessione e a ogni tap +/-
+     * nelle Impostazioni — evita cicli di erase/write inutili. */
+    if (mass_kg == g_cal_ptr->mass_kg && crr == g_cal_ptr->crr &&
+        wheel_m == g_cal_ptr->wheel_circ_m)
+        return 0;
 
     g_cal_ptr->mass_kg      = mass_kg;
     g_cal_ptr->crr          = crr;
