@@ -3,7 +3,9 @@
  * AeroDrag OTA Firmware Update
  * ─────────────────────────────────────────────────────────────────────────────
  * Scarica e installa un nuovo firmware via HTTP (Pi locale o server HTTP).
- * La partizione ota_0 (4 MB) e otadata sono già presenti in partitions.csv.
+ * Schema A/B in partitions.csv: due slot ota_0/ota_1 da 4 MB — ogni OTA
+ * scrive nello slot non in esecuzione, quindi gli aggiornamenti sono
+ * ripetibili indefinitamente.
  *
  * Trigger:
  *   WiFi: coach invia {"type":"cmd","action":"ota","url":"http://192.168.8.1:8080/fw.bin"}

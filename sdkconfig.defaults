@@ -58,3 +58,6 @@ CONFIG_SPIRAM_USE_CAPS_ALLOC=y
 # ─── OTA firmware update ───────────────────────────────────────────────────────────────
 CONFIG_OTA_ALLOW_HTTP=y
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# Controller BLE: 10 attività (4 connessioni + adv + scan, con margine)
+CONFIG_BT_CTRL_BLE_MAX_ACT=10
