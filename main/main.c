@@ -105,6 +105,30 @@ static esp_err_t i2c_init_bus(i2c_port_t port, int sda, int scl, uint32_t hz)
     return i2c_driver_install(port, I2C_MODE_MASTER, 0, 0, 0);
 }
 
+// Scan diagnostico del bus: una riga di log con gli indirizzi che ACK-ano.
+// Permette di distinguere "chip assente" (bus con altri dispositivi) da
+// "pin sbagliati" (bus completamente vuoto).
+static void i2c_scan_bus(i2c_port_t port, const char *name)
+{
+    char list[96] = {0};
+    int  found    = 0;
+    for (uint8_t a = 0x08; a <= 0x77; a++) {
+        i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+        i2c_master_start(cmd);
+        i2c_master_write_byte(cmd, (a << 1) | I2C_MASTER_WRITE, true);
+        i2c_master_stop(cmd);
+        esp_err_t r = i2c_master_cmd_begin(port, cmd, pdMS_TO_TICKS(20));
+        i2c_cmd_link_delete(cmd);
+        if (r == ESP_OK && found < 10) {
+            size_t off = strlen(list);
+            snprintf(list + off, sizeof(list) - off, " 0x%02X", a);
+            found++;
+        }
+    }
+    ESP_LOGI(TAG, "I2C scan %s: %d dispositivi%s%s",
+             name, found, found ? ":" : "", found ? list : "");
+}
+
 // ─── Sensor drivers ─────────────────────────────────────────────────────────────────────────────
 static sdp810_t  g_pitot = {0};
 static qmi8658_t g_imu   = {0};
@@ -485,6 +509,8 @@ void app_main(void)
 
     ESP_ERROR_CHECK(i2c_init_bus(I2C_NUM_0, PIN_IMU_SDA, PIN_IMU_SCL, I2C0_SPEED_HZ));
     ESP_ERROR_CHECK(i2c_init_bus(I2C_NUM_1, PIN_PITOT_SDA, PIN_PITOT_SCL, I2C1_SPEED_HZ));
+    i2c_scan_bus(I2C_NUM_0, "I2C0 (touch/IMU, GPIO1/3)");
+    i2c_scan_bus(I2C_NUM_1, "I2C1 (pitot, GPIO15/18)");
 
     ret = sdp810_init(&g_pitot, PITOT_I2C_PORT, PITOT_I2C_ADDR);
     if (ret != ESP_OK)
