@@ -509,7 +509,7 @@ void app_main(void)
 
     ESP_ERROR_CHECK(i2c_init_bus(I2C_NUM_0, PIN_IMU_SDA, PIN_IMU_SCL, I2C0_SPEED_HZ));
     ESP_ERROR_CHECK(i2c_init_bus(I2C_NUM_1, PIN_PITOT_SDA, PIN_PITOT_SCL, I2C1_SPEED_HZ));
-    i2c_scan_bus(I2C_NUM_0, "I2C0 (touch/IMU, GPIO1/3)");
+    i2c_scan_bus(I2C_NUM_0, "I2C0 (IMU/RTC, GPIO11/10)");
     i2c_scan_bus(I2C_NUM_1, "I2C1 (pitot, GPIO15/18)");
 
     ret = sdp810_init(&g_pitot, PITOT_I2C_PORT, PITOT_I2C_ADDR);
