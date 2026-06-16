@@ -262,22 +262,32 @@ static int version_ota_access_cb(uint16_t conn_handle, uint16_t attr_handle,
     return 0;
 }
 
-// ─── CONFIG (0xaa08) callback — WRITE WITH RESPONSE ──────────────────────────
-// Payload: float32 massKg [0..3] + float32 crr [4..7], little-endian
+// ─── CONFIG (0xaa08) callback — READ + WRITE WITH RESPONSE ───────────────────
+// Contract v0.1.0 — Payload 12 bytes little-endian:
+//   float32 massKg [0..3] + float32 crr [4..7] + float32 wheelCircM [8..11]
+// Backward compatible: a 8-byte WRITE updates mass+crr and leaves wheelCircM.
 extern esp_err_t cal_save(const aerodrag_cal_t *cal);
 
 static int config_access_cb(uint16_t conn_handle, uint16_t attr_handle,
                              struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
     (void)conn_handle; (void)attr_handle; (void)arg;
-    if (ctxt->op != BLE_GATT_ACCESS_OP_WRITE_CHR) return 0;
     if (!g_cal_ptr) return BLE_ATT_ERR_UNLIKELY;
+
+    if (ctxt->op == BLE_GATT_ACCESS_OP_READ_CHR) {
+        // READ: device is source of truth for wheel circumference
+        float vals[3] = { g_cal_ptr->mass_kg, g_cal_ptr->crr, g_cal_ptr->wheel_circ_m };
+        os_mbuf_append(ctxt->om, vals, sizeof(vals));
+        return 0;
+    }
+    if (ctxt->op != BLE_GATT_ACCESS_OP_WRITE_CHR) return 0;
 
     uint16_t len = OS_MBUF_PKTLEN(ctxt->om);
     if (len < 8) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
 
-    uint8_t buf[8];
-    os_mbuf_copydata(ctxt->om, 0, 8, buf);
+    uint8_t buf[12] = {0};
+    uint16_t copy = len < 12 ? len : 12;
+    os_mbuf_copydata(ctxt->om, 0, copy, buf);
 
     float mass_kg, crr;
     memcpy(&mass_kg, buf + 0, 4);
@@ -288,9 +298,19 @@ static int config_access_cb(uint16_t conn_handle, uint16_t attr_handle,
 
     g_cal_ptr->mass_kg = mass_kg;
     g_cal_ptr->crr     = crr;
+
+    // wheel_circ_m optional (only when client sends the full 12-byte payload)
+    if (len >= 12) {
+        float wheel;
+        memcpy(&wheel, buf + 8, 4);
+        if (wheel < 1.0f || wheel > 2.5f) return BLE_ATT_ERR_VALUE_NOT_ALLOWED;
+        g_cal_ptr->wheel_circ_m = wheel;
+    }
+
     cal_save(g_cal_ptr);
 
-    ESP_LOGI("ble_cfg", "Config updated: mass=%.1f kg  crr=%.4f", mass_kg, crr);
+    ESP_LOGI("ble_cfg", "Config updated: mass=%.1f kg  crr=%.4f  wheel=%.3f m",
+             mass_kg, crr, g_cal_ptr->wheel_circ_m);
     return 0;
 }
 
@@ -343,11 +363,11 @@ static const struct ble_gatt_svc_def GATT_SERVICES[] = {
                 .flags      = BLE_GATT_CHR_F_WRITE,
             },
             {
-                // Config: massKg (float32) + crr (float32) — WRITE WITH RESPONSE
+                // Config: massKg + crr + wheelCircM (3×float32, 12 B) — READ + WRITE WITH RESPONSE
                 .uuid       = &CHR_CONFIG.u,
                 .access_cb  = config_access_cb,
                 .val_handle = &g_chr_config_h,
-                .flags      = BLE_GATT_CHR_F_WRITE,
+                .flags      = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE,
             },
             {
                 // Physics output: 28 bytes, NOTIFY 10 Hz
@@ -484,6 +504,7 @@ void ble_notify_battery(uint8_t pct)
 
 // ─── Physics output notify (0xaa09) — 28 bytes, 10 Hz ────────────────────────
 // Layout: cda(4) vAirMs(4) rhoKgM3(4) pctAero(4) pAeroW(4) pRollingW(4) pGravityW(4)
+// Contract v0.1.0 — pctAero is a percentage 0-100 (same scale as WiFi/Pi/app).
 void ble_notify_physics(const aerodrag_physics_t *p)
 {
     if (!g_notify_physics) return;
@@ -492,7 +513,7 @@ void ble_notify_physics(const aerodrag_physics_t *p)
         v[0] = p->CdA;
         v[1] = p->v_air_ms;
         v[2] = p->rho;
-        v[3] = p->pct_aero / 100.0f;   // uint8 0-100 → float 0-1
+        v[3] = (float)p->pct_aero;     // percent 0-100 (was 0-1 before contract v0.1.0)
         v[4] = p->p_aero_w;
         v[5] = p->p_rolling_w;
         v[6] = p->p_gravity_w;

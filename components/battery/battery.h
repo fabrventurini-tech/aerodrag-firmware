@@ -89,6 +89,7 @@ static const aerodrag_cal_t CAL_DEFAULT = {
     .imu_pitch_offset = 0.0f,
     .mass_kg          = 78.0f,
     .crr              = 0.0040f,
+    .wheel_circ_m     = 2.105f,   // 700c x 25 default
     .cda_target       = 0.230f,
     .crc              = 0xDEADBEEF,
 };
