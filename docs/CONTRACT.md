@@ -1,7 +1,7 @@
 # AeroDrag — Interface Contract
 
 ```
-contract: v0.1.1
+contract: v0.1.2
 owner:    aerodrag-firmware (questa repo è la fonte di verità unica)
 status:   ratified
 date:     2026-06-16
@@ -122,7 +122,7 @@ Endpoint app→pi (coach): `ws://<pi>:8080/coach`.
 | Campo | Tipo | Unità | Note |
 |-------|------|-------|------|
 | `t` | number | ms | timestamp sorgente (ms da boot per il firmware) |
-| `device` | string | — | MAC BLE; chiave di sessione |
+| `device` | string | — | MAC BLE `AA:BB:CC:DD:EE:FF`; **obbligatorio**, chiave di sessione |
 | `athlete` | string | — | nome atleta (sanificato: niente `"` `\` o ctrl) |
 | `lap` | number | — | giro corrente, ≥1 |
 | `CdA` | number | m² | valido in **[0.05, 1.0]**; fuori → scartato dal Pi |
@@ -139,6 +139,13 @@ Endpoint app→pi (coach): `ws://<pi>:8080/coach`.
 
 Vincoli: frame > 127 byte rifiutati lato firmware per i comandi; sessione
 salvata solo con ≥ 20 frame; il Pi campiona 1 punto ogni 5 frame (≤ 2000 pt/giro).
+
+**Identità alla sorgente (v0.1.2):** il campo `device` è **obbligatorio** e DEVE
+essere un MAC valido (6 ottetti esadecimali separati da `:`). Il Pi **DEVE
+rifiutare all'ingestione** ogni frame con `device` assente o non valido — come già
+fa per il `CdA` fuori range — così una sessione priva di identità **non si forma
+mai**. Conseguenza: nessuna sessione anonima e nessun fallback (`unknown` o forma
+senza suffisso): vedi §5.
 
 ---
 
@@ -199,12 +206,13 @@ con nome `session_{ts}_{deviceIdHex}.json`. Schema:
 Questo schema è **condiviso** fra Pi (produttore), coach (sink/visualizzatore) e
 app (tipi TS in `aerodrag-new/src/store`). Modifiche → seam `coach↔new`.
 
-**Vincolo nome file (v0.1.1):** il `deviceId` è **obbligatorio e identificabile**.
-Il Pi **NON DEVE** emettere sessioni con `deviceId` vuoto o non valido: tali
-sessioni vanno **scartate a monte**, non inviate al receiver. Il nome file è
-**sempre** `session_{ts}_{deviceIdHex}.json` con `deviceIdHex` = cifre esadecimali
-non vuote (MAC senza `:`). Nessun token di fallback (`unknown`) è ammesso: il
-`/receive` del coach valida con `^session_\d+_[A-Fa-f0-9]+\.json$` e rifiuta il resto.
+**Vincolo nome file (v0.1.1, raffinato in v0.1.2):** poiché il Pi rifiuta a monte
+i frame senza `device` valido (§3), ogni sessione persistita ha un `deviceId`
+valido. Il nome file è **sempre** `session_{ts}_{deviceIdHex}.json` con
+`deviceIdHex` = MAC senza `:` (esadecimale non vuoto). **Non** sono ammessi né il
+token `unknown` né la forma anonima senza suffisso `session_{ts}.json`. Il
+`/receive` del coach valida con `^session_\d+_[A-Fa-f0-9]+\.json$` (suffisso
+**obbligatorio**) e rifiuta il resto.
 
 ---
 
@@ -242,6 +250,17 @@ Costanti: `g = 9.80665`, `RHO_STD = 1.225`, CdA valido in `[0.10, 0.60]` (device
 ---
 
 ## 8. Changelog
+
+### v0.1.2 — 2026-06-17
+Risoluzione capofila della seam `pi↔coach` (PR pi#7 divergente da v0.1.1).
+Adottata la soluzione **più corretta**: validazione dell'identità **alla sorgente**.
+- **§3**: `device` obbligatorio e MAC-valido; il Pi **rifiuta all'ingestione** i
+  frame senza `device` valido (la sessione non si forma) — niente perdita di dati
+  legittimi, che hanno sempre un MAC.
+- **§5**: confermato filename `session_{ts}_{deviceIdHex}.json`; vietati sia
+  `unknown` sia la forma anonima `session_{ts}.json`. Regex coach a suffisso
+  obbligatorio.
+- Supera la variante "no-data-loss" della PR pi#7 (forma anonima), che non è più conforme.
 
 ### v0.1.1 — 2026-06-17
 Chiarimento ratificato dalla seam `pi↔coach` (coach#3 / pi#6), nessuna rottura:
