@@ -1,7 +1,7 @@
 # AeroDrag — Interface Contract
 
 ```
-contract: v0.1.0
+contract: v0.1.1
 owner:    aerodrag-firmware (questa repo è la fonte di verità unica)
 status:   ratified
 date:     2026-06-16
@@ -199,6 +199,13 @@ con nome `session_{ts}_{deviceIdHex}.json`. Schema:
 Questo schema è **condiviso** fra Pi (produttore), coach (sink/visualizzatore) e
 app (tipi TS in `aerodrag-new/src/store`). Modifiche → seam `coach↔new`.
 
+**Vincolo nome file (v0.1.1):** il `deviceId` è **obbligatorio e identificabile**.
+Il Pi **NON DEVE** emettere sessioni con `deviceId` vuoto o non valido: tali
+sessioni vanno **scartate a monte**, non inviate al receiver. Il nome file è
+**sempre** `session_{ts}_{deviceIdHex}.json` con `deviceIdHex` = cifre esadecimali
+non vuote (MAC senza `:`). Nessun token di fallback (`unknown`) è ammesso: il
+`/receive` del coach valida con `^session_\d+_[A-Fa-f0-9]+\.json$` e rifiuta il resto.
+
 ---
 
 ## 6. Modello fisico canonico (riferimento per le doppie implementazioni)
@@ -235,6 +242,12 @@ Costanti: `g = 9.80665`, `RHO_STD = 1.225`, CdA valido in `[0.10, 0.60]` (device
 ---
 
 ## 8. Changelog
+
+### v0.1.1 — 2026-06-17
+Chiarimento ratificato dalla seam `pi↔coach` (coach#3 / pi#6), nessuna rottura:
+- **§5 nome file sessione**: `deviceId` obbligatorio/identificabile. Il Pi scarta a
+  monte le sessioni con `deviceId` vuoto/non valido e **non** usa il fallback
+  `unknown` (fuori contratto). Filename sempre `session_{ts}_{deviceIdHex}.json`.
 
 ### v0.1.0 — 2026-06-16
 Primo contratto ratificato. Risolte 5 divergenze fra implementazioni:
