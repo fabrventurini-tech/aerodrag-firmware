@@ -263,9 +263,9 @@ static int version_ota_access_cb(uint16_t conn_handle, uint16_t attr_handle,
 }
 
 // ─── CONFIG (0xaa08) callback — READ + WRITE WITH RESPONSE ───────────────────
-// Payload: float32 massKg [0..3] + float32 crr [4..7] + float32 wheelCircM
-// [8..11], little-endian. Write da 8 byte (formato v1.0, solo mass+crr)
-// ancora accettata: la circonferenza resta invariata.
+// Contract v0.1.0 — Payload 12 bytes little-endian:
+//   float32 massKg [0..3] + float32 crr [4..7] + float32 wheelCircM [8..11]
+// Write da 8 byte (solo mass+crr) ancora accettata: la circonferenza resta invariata.
 extern esp_err_t cal_save(const aerodrag_cal_t *cal);
 
 static int config_access_cb(uint16_t conn_handle, uint16_t attr_handle,
@@ -370,7 +370,7 @@ static const struct ble_gatt_svc_def GATT_SERVICES[] = {
                 .flags      = BLE_GATT_CHR_F_WRITE,
             },
             {
-                // Config: massKg + crr + wheelCircM (3× float32) — READ + WRITE
+                // Config: massKg + crr + wheelCircM (3× float32, 12 B) — READ + WRITE
                 .uuid       = &CHR_CONFIG.u,
                 .access_cb  = config_access_cb,
                 .val_handle = &g_chr_config_h,
@@ -511,6 +511,7 @@ void ble_notify_battery(uint8_t pct)
 
 // ─── Physics output notify (0xaa09) — 28 bytes, 10 Hz ────────────────────────
 // Layout: cda(4) vAirMs(4) rhoKgM3(4) pctAero(4) pAeroW(4) pRollingW(4) pGravityW(4)
+// Contract v0.1.0 — pctAero is a percentage 0-100 (same scale as WiFi/Pi/app).
 void ble_notify_physics(const aerodrag_physics_t *p)
 {
     if (!g_notify_physics) return;
@@ -519,7 +520,7 @@ void ble_notify_physics(const aerodrag_physics_t *p)
         v[0] = p->CdA;
         v[1] = p->v_air_ms;
         v[2] = p->rho;
-        v[3] = p->pct_aero / 100.0f;   // uint8 0-100 → float 0-1
+        v[3] = (float)p->pct_aero;     // percent 0-100 (was 0-1 before contract v0.1.0)
         v[4] = p->p_aero_w;
         v[5] = p->p_rolling_w;
         v[6] = p->p_gravity_w;

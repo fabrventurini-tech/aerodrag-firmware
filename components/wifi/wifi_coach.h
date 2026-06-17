@@ -236,6 +236,13 @@ esp_err_t coach_send_frame(const aerodrag_sensors_t *s,
 
     int64_t ts_ms = esp_timer_get_time() / 1000LL;
 
+    // Contract v0.1.0 — network telemetry frame is capped at 2 Hz (the BLE
+    // notify path stays at 10 Hz for the app's local rendering). The caller
+    // task runs at 10 Hz, so we drop frames closer than 500 ms apart.
+    static int64_t s_last_frame_ms = 0;
+    if (ts_ms - s_last_frame_ms < 500) return ESP_OK;
+    s_last_frame_ms = ts_ms;
+
     char athlete_safe[sizeof(g_identity.athlete_name)];
     strlcpy(athlete_safe, g_identity.athlete_name, sizeof(athlete_safe));
     for (size_t i = 0; i < sizeof(athlete_safe) && athlete_safe[i]; i++) {

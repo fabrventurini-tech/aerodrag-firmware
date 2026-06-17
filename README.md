@@ -127,12 +127,20 @@ aerodrag-firmware/
 
 ## UUID BLE (devono coincidere con l'app React Native)
 
-| UUID | Dati | Frequenza |
-|---|---|---|
-| `0000aa01-...-aa00` | float32[2]: pitotPa, staticPa | 10 Hz |
-| `0000aa02-...-aa00` | float32[2]: pitchDeg, rollDeg | 10 Hz |
-| `0000aa03-...-aa00` | float32[3]: tempC, humidity, altM | 1 Hz |
-| `0000aa04-...-aa00` | uint16+uint8+uint8: power, cad, hr | 4 Hz |
+Contratto: **v0.1.0** — sorgente di verità in [`docs/CONTRACT.md`](docs/CONTRACT.md).
+
+| UUID | Flags | Dati | Frequenza |
+|---|---|---|---|
+| `0000aa01-...-aa00` | R+N | float32[2]: pitotPa, staticPa | 10 Hz |
+| `0000aa02-...-aa00` | R+N | float32[2]: pitchDeg, rollDeg | 10 Hz |
+| `0000aa03-...-aa00` | R+N | float32[4]: tempC, humidity, altM, speedMs | 1 Hz |
+| `0000aa04-...-aa00` | R+N | uint16+uint8+uint8: power, cad, hr (N=sentinella lap 0xFFFF) | poll 1 Hz |
+| `0000aa05-...-aa00` | R+W | char[18] deviceId + char[32] athleteName (50 B) | on-connect |
+| `0000aa06-...-aa00` | R | stringa versione FW NUL-terminated | once |
+| `0000aa07-...-aa00` | W | URL OTA (.bin) | on-demand |
+| `0000aa08-...-aa00` | R+W | float32[3]: massKg, crr, wheelCircM (12 B) | on-connect |
+| `0000aa09-...-aa00` | N | float32[7]: cda, vAirMs, rho, pctAero(0-100), pAeroW, pRollingW, pGravityW (28 B) | 10 Hz |
+| `0000aa0a-...-aa00` | N | uint8: battery % | 0.1 Hz |
 
 ## Troubleshooting
 
