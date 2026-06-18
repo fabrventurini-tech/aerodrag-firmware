@@ -236,11 +236,14 @@ esp_err_t coach_send_frame(const aerodrag_sensors_t *s,
 
     int64_t ts_ms = esp_timer_get_time() / 1000LL;
 
-    // Contract v0.1.0 — network telemetry frame is capped at 2 Hz (the BLE
-    // notify path stays at 10 Hz for the app's local rendering). The caller
-    // task runs at 10 Hz, so we drop frames closer than 500 ms apart.
+    // Contract v0.1.x — network telemetry frame capped at 2 Hz (the BLE notify
+    // path stays at 10 Hz for the app's local rendering). The caller task runs
+    // at 10 Hz, so we drop frames closer than 500 ms apart.
+    // Exception (v0.1.3): a frame carrying a lap edge (lap_event) ALWAYS goes
+    // out — otherwise the lap marker is lost when the edge lands in a throttled
+    // cycle (the coach broadcasts lap_event only on lapEvent===true).
     static int64_t s_last_frame_ms = 0;
-    if (ts_ms - s_last_frame_ms < 500) return ESP_OK;
+    if (!lap_event && ts_ms - s_last_frame_ms < 500) return ESP_OK;
     s_last_frame_ms = ts_ms;
 
     char athlete_safe[sizeof(g_identity.athlete_name)];

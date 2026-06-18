@@ -1,7 +1,7 @@
 # AeroDrag — Interface Contract
 
 ```
-contract: v0.1.2
+contract: v0.1.3
 owner:    aerodrag-firmware (questa repo è la fonte di verità unica)
 status:   ratified
 date:     2026-06-16
@@ -140,6 +140,14 @@ Endpoint app→pi (coach): `ws://<pi>:8080/coach`.
 Vincoli: frame > 127 byte rifiutati lato firmware per i comandi; sessione
 salvata solo con ≥ 20 frame; il Pi campiona 1 punto ogni 5 frame (≤ 2000 pt/giro).
 
+**Obbligo produttore — identità (v0.1.3):** ogni produttore (firmware **e app**)
+**NON DEVE** inviare `hello`/frame senza un `device` MAC valido
+(`^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$`). Se l'identità non è disponibile —
+es. **app in sim mode o non ancora accoppiata** — il produttore **non apre lo
+stream/non trasmette** al coach. È la regola speculare alla validazione che il
+Pi applica all'ingestione (§5): garantisce il *principio di verità dei dati* —
+nessuna sessione anonima o simulata viene registrata come reale.
+
 **Identità alla sorgente (v0.1.2):** il campo `device` è **obbligatorio** e DEVE
 essere un MAC valido (6 ottetti esadecimali separati da `:`). Il Pi **DEVE
 rifiutare all'ingestione** ogni frame con `device` assente o non valido — come già
@@ -250,6 +258,16 @@ Costanti: `g = 9.80665`, `RHO_STD = 1.225`, CdA valido in `[0.10, 0.60]` (device
 ---
 
 ## 8. Changelog
+
+### v0.1.3 — 2026-06-17
+Audit dataflow cross-repo. Chiarimento + fix, nessuna rottura di wire:
+- **§3 obbligo produttore**: firmware/app non inviano `hello`/frame senza `device`
+  MAC valido (sim/non-accoppiato → niente stream). Regola speculare alla
+  validazione del Pi (§5). Risolve la perdita silenziosa di frame app con
+  `device:'unknown'` introdotta dal filtro MAC del Pi (v0.1.2).
+- **Firmware (`coach_send_frame`)**: i frame con `lapEvent=true` **bypassano** il
+  throttle 2 Hz, così il marker di giro non viene perso quando l'edge cade in un
+  ciclo throttlato.
 
 ### v0.1.2 — 2026-06-17
 Risoluzione capofila della seam `pi↔coach` (PR pi#7 divergente da v0.1.1).
