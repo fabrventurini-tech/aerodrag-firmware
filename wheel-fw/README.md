@@ -3,7 +3,8 @@
 Firmware del **sensore ruota** per la calibrazione del **Crr** (Coefficient of
 Rolling Resistance) tramite coast-down.
 
-- **MCU:** nRF52840 (Nordic) · **IMU:** ICM-42688-P
+- **Board:** Seeed **XIAO BLE Sense** (nRF52840 Sense) · **IMU onboard:** **LSM6DS3TR-C** (I2C)
+- **Batteria:** LiPo 3.7 V 100 mAh (caricatore onboard sul XIAO)
 - **Toolchain:** nRF Connect SDK / Zephyr (BLE peripheral)
 - **Ruolo:** dispositivo BLE che espone il servizio proprietario **`0xBB00`**.
 
@@ -47,18 +48,28 @@ le costanti di montaggio vanno verificati sul prototipo.
 
 ## Stato
 
-🟡 **Oltre lo skeleton** — implementati: servizio GATT `0xBB00`, integrazione IMU
-ICM-42688 via Zephyr Sensor API, calcolo `speedMs/accelMs2/tempC/vibRMS`, stream
-NOTIFY a 10 Hz (sampling 100 Hz), handler `CMD`/`CONFIG`, advertising, overlay
-devicetree SPI (`app.overlay`, da adattare alla board).
+🟡 **Oltre lo skeleton** — implementati: servizio GATT `0xBB00`, integrazione
+IMU onboard via **Zephyr Sensor API** (driver-agnostica), calcolo
+`speedMs/accelMs2/tempC/vibRMS`, stream NOTIFY a 10 Hz (sampling 100 Hz), handler
+`CMD`/`CONFIG`, advertising. L'IMU è risolta dall'alias `imu` o dal primo
+`st,lsm6dsl`/`st,lsm6dso` della DTS (la board `xiao_ble//sense` dichiara l'IMU).
 
 ⚠️ **Non ancora compilato/flashato** (manca toolchain nRF Connect SDK in questo
-ambiente) e il **modello di montaggio è un'assunzione**: serve bring-up + taratura
-su hardware reale. `RESULT 0xBB02` resta legacy (il Crr lo calcola l'app).
+ambiente). Da verificare in bring-up:
+- che la board `xiao_ble/nrf52840/sense` esponga l'IMU LSM6DS3TR-C nella DTS con
+  il **driver/Kconfig** giusto per la tua versione di NCS (qui `CONFIG_LSM6DSL`;
+  se la tua DTS usa un altro compatible, adegua `prj.conf`);
+- il **modello di montaggio** (asse spin = `GYRO_SPIN_CHAN` = Z) e le costanti;
+- consumi/autonomia con LiPo 100 mAh (valuta sampling più basso + sleep).
+
+`RESULT 0xBB02` resta legacy (il Crr lo calcola l'app).
 
 ## Build (nRF Connect SDK)
 
 ```sh
-west build -b aerodrag_wheel_nrf52840   # board da definire (o nrf52840dk_nrf52840)
-west flash
+west build -b xiao_ble/nrf52840/sense
+west flash            # XIAO: doppio reset → bootloader UF2, oppure J-Link
 ```
+
+> TODO bring-up: monitoraggio batteria (tensione su pin analogico del XIAO +
+> partitore) e gestione carica; gating dello stream allo stato coast-down.

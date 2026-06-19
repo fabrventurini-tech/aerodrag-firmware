@@ -1,6 +1,7 @@
 /*
- * AeroDrag Wheel — firmware sensore ruota Crr (nRF52840 + ICM-42688-P)
- * Zephyr / nRF Connect SDK.
+ * AeroDrag Wheel — firmware sensore ruota Crr
+ * Board: Seeed XIAO BLE Sense (nRF52840 Sense) — IMU LSM6DS3TR-C onboard (I2C).
+ * Zephyr / nRF Connect SDK.   Build: west build -b xiao_ble/nrf52840/sense
  *
  * Espone il servizio BLE 0xBB00 (contract: ../docs/CONTRACT.md, confine
  * firmware↔wheel). Da v0.2.0 il consumer è l'ESP32 (BLE central), che relaya
@@ -12,8 +13,8 @@
  *   0xBB04 CONFIG  READ+WRITE    8B:  float tireCircM + float massKg
  *
  * ── MODELLO FISICO (ASSUNZIONI HW — da validare su hardware) ──────────────────
- * Il sensore è montato sul MOZZO della ruota: l'asse di rotazione della ruota
- * coincide con l'asse Z del giroscopio. Quindi:
+ * La board è montata sul MOZZO della ruota: l'asse di rotazione della ruota
+ * coincide con l'asse Z del giroscopio della IMU. Quindi:
  *   omega   = |gyro_z|                      [rad/s]   (velocità angolare ruota)
  *   radius  = tireCircM / (2·pi)            [m]
  *   speedMs = omega · radius                [m/s]
@@ -44,6 +45,18 @@ LOG_MODULE_REGISTER(aerodrag_wheel, LOG_LEVEL_INF);
 #define DT_S            (1.0f / SAMPLE_HZ)
 #define ACCEL_LP_ALPHA  0.2f                /* low-pass su accelMs2           */
 #define VIB_MEAN_ALPHA  0.05f               /* media mobile modulo accel      */
+
+/* IMU: usa l'alias 'imu' se la board lo definisce, altrimenti il primo
+ * LSM6DSL/LSM6DSO con status okay (la board xiao_ble//sense dichiara l'IMU). */
+#if DT_NODE_EXISTS(DT_ALIAS(imu))
+#define IMU_NODE DT_ALIAS(imu)
+#elif DT_HAS_COMPAT_STATUS_OKAY(st_lsm6dsl)
+#define IMU_NODE DT_COMPAT_GET_ANY_STATUS_OKAY(st_lsm6dsl)
+#elif DT_HAS_COMPAT_STATUS_OKAY(st_lsm6dso)
+#define IMU_NODE DT_COMPAT_GET_ANY_STATUS_OKAY(st_lsm6dso)
+#else
+#error "IMU non trovata: definisci un alias 'imu' o abilita l'IMU onboard nella DTS"
+#endif
 
 /* ── UUID servizio/caratteristiche 0xBB00 ──────────────────────────────────── */
 #define BT_UUID_WHEEL_SVC     BT_UUID_DECLARE_16(0xBB00)
@@ -228,11 +241,11 @@ static void bt_ready(int err)
 
 int main(void)
 {
-	g_imu = DEVICE_DT_GET_ONE(invensense_icm42688);
+	g_imu = DEVICE_DT_GET(IMU_NODE);
 	if (!device_is_ready(g_imu)) {
-		LOG_ERR("ICM-42688 non pronto — stream a zero finché non risponde");
+		LOG_ERR("IMU (LSM6DS3TR-C) non pronta — stream a zero finché non risponde");
 	} else {
-		LOG_INF("ICM-42688 pronto");
+		LOG_INF("IMU pronta");
 	}
 
 	int err = bt_enable(bt_ready);
