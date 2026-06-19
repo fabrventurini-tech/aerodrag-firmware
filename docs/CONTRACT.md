@@ -1,7 +1,7 @@
 # AeroDrag — Interface Contract
 
 ```
-contract: v0.2.1
+contract: v0.2.2
 owner:    aerodrag-firmware (questa repo è la fonte di verità unica)
 status:   ratified
 date:     2026-06-16
@@ -78,6 +78,7 @@ MTU richiesto ≥ 53 (si negozia 185): PHYSICS=28 B, READ IDENTITY=50 B.
 | SENSOR_WHITELIST | `aa0b` | R+W | on-pair | var | `uint8 count` + count×(`uint8 type` + `uint8 mac[6]`). type: 1=power,2=csc,3=hr,4=wheel. Firmware central connette **solo** a questi MAC |
 | WHEEL_STREAM | `aa0c` | N | 10 Hz | 16 | `float speedMs, accelMs2, tempC, vibRMS` — relay dei dati grezzi del sensore ruota durante la calibrazione Crr |
 | WHEEL_CMD | `aa0d` | W | on-demand | 1 | `uint8` comando coast-down: 0x01 indoor, 0x02 outdoor-A, 0x03 outdoor-B, 0xFF cancel → inoltrato dal firmware al sensore ruota |
+| SENSOR_SCAN | `aa0e` | W+N | on-pair | var | **W** 1B: 0x01 start / 0x00 stop discovery. **N** (1 entry per sensore scoperto): `uint8 type` + `uint8 mac[6]` + `int8 rssi` + `uint8 nameLen` + `char name[nameLen]` |
 
 ### Vincoli `CONFIG` (0xaa08)
 - **12 byte**: `massKg`∈[33,200], `crr`∈[0.001,0.025], `wheelCircM`∈[1.0,2.5].
@@ -121,6 +122,14 @@ bici vicine; il firmware resta l'unica fonte di verità).
   ottiene il MAC e scrive l'elenco autorizzato in **`SENSOR_WHITELIST` (0xaa0b)**.
   Il central del firmware si connette **esclusivamente** ai MAC in whitelist
   (non più "il primo trovato").
+- **Discovery dal firmware (v0.2.2) — fix iOS**: l'app **non può ricavare il MAC**
+  dei sensori dal proprio stack BLE (su iOS `device.id` è un UUID CoreBluetooth,
+  non il MAC). Quindi è il **firmware** (che vede i MAC reali) a fare la scoperta:
+  l'app scrive `0x01` su **`SENSOR_SCAN` (0xaa0e)** → il firmware scansiona (senza
+  connettersi) e **notifica una entry per sensore scoperto** `{type, mac[6], rssi,
+  name}`; l'app mostra la lista, l'utente sceglie, l'app scrive i MAC in `0xaa0b`.
+  Discovery con auto-stop (~15 s) o stop esplicito (`0x00`). Funziona su iOS e
+  Android (il MAC arriva dal firmware, non dal BLE dell'app).
 - **Crr — calibrazione nell'app, dati via firmware**: il sensore ruota si bonda
   al firmware; durante il coast-down il firmware **relaya** lo stream grezzo su
   **`WHEEL_STREAM` (0xaa0c)** e inoltra i comandi dell'app da **`WHEEL_CMD`
@@ -319,6 +328,13 @@ Costanti: `g = 9.80665`, `RHO_STD = 1.225`, CdA valido in `[0.10, 0.60]` (device
 ---
 
 ## 8. Changelog
+
+### v0.2.2 — 2026-06-19
+Fix pairing sensori su iOS (seam `firmware↔new`). Su iOS l'app non conosce il
+MAC dei sensori (l'id BLE è un UUID), quindi non può popolare `0xaa0b`.
+- Nuova **`SENSOR_SCAN` (0xaa0e)**: il **firmware** fa la discovery (vede i MAC
+  reali) e notifica all'app i candidati `{type, mac, rssi, name}`; l'app sceglie
+  e scrive i MAC in `SENSOR_WHITELIST 0xaa0b`. Funziona iOS+Android.
 
 ### v0.2.1 — 2026-06-17
 Il firmware del **sensore ruota Crr** entra nel contratto come componente gestito:
