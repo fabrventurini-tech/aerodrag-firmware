@@ -38,6 +38,11 @@ static const char *TAG = "ble_sens";
 /* Relay dello stream ruota Crr verso l'app (implementato in ble_server.h) */
 extern void ble_notify_wheel_stream(const void *data, uint8_t len);
 
+/* Notifica un sensore scoperto durante la discovery (0xaa0e, ble_server.h).
+ * mac_be = MAC big-endian (mac[0]=AA). */
+extern void ble_notify_sensor_scan(uint8_t type, const uint8_t *mac_be,
+                                   int8_t rssi, const char *name, uint8_t name_len);
+
 /* ─────────────────────────────────────────────────────────────────────────── */
 /*  COSTANTI GATT                                                               */
 /* ─────────────────────────────────────────────────────────────────────────── */
@@ -518,8 +523,12 @@ static void start_scan_delayed(void) {
 
 static void start_scan(void) {
     if (!s_scan_enabled)       return;  /* scan sospeso (es. WiFi)  */
-    if (s_wl_count == 0)       return;  /* nessun sensore autorizzato (whitelist vuota) */
-    if (!slot_idle())          return;  /* tutti gli slot occupati */
+    /* In discovery si scansiona sempre (anche con whitelist vuota); in esercizio
+     * solo se c'è almeno un sensore autorizzato e uno slot libero. */
+    if (!s_discovery) {
+        if (s_wl_count == 0)   return;  /* nessun sensore autorizzato */
+        if (!slot_idle())      return;  /* tutti gli slot occupati    */
+    }
     if (ble_gap_disc_active()) return;  /* scan già in corso       */
 
     struct ble_gap_disc_params p = {
@@ -539,6 +548,66 @@ static void start_scan(void) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────── */
+/*  DISCOVERY (0xaa0e) — scopre i sensori e ne riporta i MAC all'app            */
+/* ─────────────────────────────────────────────────────────────────────────── */
+
+static volatile bool      s_discovery = false;
+static ble_addr_t         s_seen[20];
+static uint8_t            s_seen_n = 0;
+static esp_timer_handle_t s_disc_timer = NULL;
+
+/* Mappa un service UUID 16-bit target → type whitelist (0 se non target) */
+static uint8_t svc_to_type(uint16_t svc) {
+    switch (svc) {
+        case UUID_SVC_POWER: return SENSOR_TYPE_POWER;
+        case UUID_SVC_CSC:   return SENSOR_TYPE_CSC;
+        case UUID_SVC_HR:    return SENSOR_TYPE_HR;
+        case UUID_SVC_WHEEL: return SENSOR_TYPE_WHEEL;
+        default:             return 0;
+    }
+}
+
+/* Cerca nell'advertising un service UUID 16-bit target → ritorna il type (0=no) */
+static uint8_t adv_find_target_type(const uint8_t *data, uint8_t dlen) {
+    for (uint8_t i = 0; i + 1 < dlen; ) {
+        uint8_t alen = data[i];
+        if (alen == 0) break;
+        uint8_t type = data[i + 1];
+        if ((type == 0x02 || type == 0x03) && alen >= 3) {  /* 16-bit UUID list */
+            for (uint8_t j = 2; j < alen && i + j + 1 < dlen; j += 2) {
+                uint16_t uuid = (uint16_t)(data[i+j] | (data[i+j+1] << 8));
+                uint8_t t = svc_to_type(uuid);
+                if (t) return t;
+            }
+        }
+        i += alen + 1;
+    }
+    return 0;
+}
+
+/* Estrae il local name (0x08 shortened / 0x09 complete) dall'advertising */
+static uint8_t adv_find_name(const uint8_t *data, uint8_t dlen, char *out, uint8_t max) {
+    for (uint8_t i = 0; i + 1 < dlen; ) {
+        uint8_t alen = data[i];
+        if (alen == 0) break;
+        uint8_t type = data[i + 1];
+        if ((type == 0x08 || type == 0x09) && alen >= 1) {
+            uint8_t n = alen - 1;
+            if (n > max) n = max;
+            if (i + 2 + n <= dlen) { memcpy(out, &data[i+2], n); return n; }
+        }
+        i += alen + 1;
+    }
+    return 0;
+}
+
+static bool seen_contains(const ble_addr_t *addr) {
+    for (uint8_t i = 0; i < s_seen_n; i++)
+        if (memcmp(s_seen[i].val, addr->val, 6) == 0) return true;
+    return false;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────── */
 /*  GAP EVENT HANDLER CENTRALE                                                   */
 /* ─────────────────────────────────────────────────────────────────────────── */
 
@@ -550,6 +619,22 @@ static int central_gap_event(struct ble_gap_event *event, void *arg) {
     /* ── Dispositivo scoperto durante scan ─────────────────────────────── */
     case BLE_GAP_EVENT_DISC: {
         const struct ble_gap_disc_desc *disc = &event->disc;
+
+        /* Discovery (0xaa0e): riporta i sensori target SENZA connettersi. */
+        if (s_discovery) {
+            uint8_t t = adv_find_target_type(disc->data, disc->length_data);
+            if (!t) break;
+            if (seen_contains(&disc->addr)) break;
+            if (s_seen_n < (sizeof(s_seen)/sizeof(s_seen[0])))
+                s_seen[s_seen_n++] = disc->addr;
+            uint8_t mac_be[6];
+            for (int b = 0; b < 6; b++) mac_be[b] = disc->addr.val[5 - b];
+            char name[20];
+            uint8_t nl = adv_find_name(disc->data, disc->length_data, name, sizeof(name));
+            ble_notify_sensor_scan(t, mac_be, disc->rssi, name, nl);
+            break;  /* in discovery non ci si connette */
+        }
+
         /* Contract v0.2.0: connetti SOLO ai MAC in whitelist (anti cross-talk). */
         int wl = wl_find_by_addr(&disc->addr);
         if (wl < 0) break;
@@ -805,4 +890,33 @@ void ble_sensors_set_wheel_circumference(float meters) {
 void ble_sensors_set_rider_mass(float kg) {
     s_rider_mass_kg = kg;
     wheel_push_config();
+}
+
+/* ── Discovery (0xaa0e) ──────────────────────────────────────────────────── */
+static void _disc_timeout_cb(void *arg) {
+    (void)arg;
+    ble_sensors_set_discovery(false);   /* auto-stop dopo ~15 s */
+}
+
+void ble_sensors_set_discovery(bool on) {
+    s_discovery = on;
+    if (on) {
+        s_seen_n = 0;
+        ESP_LOGI(TAG, "Discovery sensori ON");
+        if (!s_disc_timer) {
+            const esp_timer_create_args_t ta = {
+                .callback = _disc_timeout_cb, .name = "sens_disc",
+            };
+            esp_timer_create(&ta, &s_disc_timer);
+        }
+        esp_timer_stop(s_disc_timer);
+        esp_timer_start_once(s_disc_timer, 15000000ULL);   /* 15 s */
+        if (s_nimble_synced) start_scan();
+    } else {
+        ESP_LOGI(TAG, "Discovery sensori OFF");
+        if (s_disc_timer) esp_timer_stop(s_disc_timer);
+        if (s_nimble_synced && ble_gap_disc_active()) ble_gap_disc_cancel();
+        /* Riprende lo scan normale (connessione ai whitelisted) */
+        if (s_nimble_synced) start_scan_delayed();
+    }
 }

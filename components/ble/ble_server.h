@@ -81,6 +81,11 @@ static const ble_uuid128_t CHR_WHEEL_CMD = BLE_UUID128_INIT(
     0xfb, 0x34, 0x9b, 0x5f, 0x80, 0x00, 0x00, 0x80,
     0x00, 0x10, 0x00, 0x00, 0x0d, 0xaa, 0x00, 0x00);
 
+// SENSOR_SCAN (0xaa0e): discovery sensori — WRITE start/stop + NOTIFY entry (v0.2.2)
+static const ble_uuid128_t CHR_SENSOR_SCAN = BLE_UUID128_INIT(
+    0xfb, 0x34, 0x9b, 0x5f, 0x80, 0x00, 0x00, 0x80,
+    0x00, 0x10, 0x00, 0x00, 0x0e, 0xaa, 0x00, 0x00);
+
 static uint16_t g_chr_identity_h    = 0;
 static uint16_t g_chr_version_h     = 0;
 static uint16_t g_chr_ota_h         = 0;
@@ -89,6 +94,7 @@ static uint16_t g_chr_physics_h     = 0;
 static uint16_t g_chr_sensorwl_h    = 0;
 static uint16_t g_chr_wheelstream_h = 0;
 static uint16_t g_chr_wheelcmd_h    = 0;
+static uint16_t g_chr_sensorscan_h  = 0;
 
 // Notify slot — 32 bytes to accommodate physics payload (28 B)
 typedef struct { uint8_t data[32]; uint8_t len; bool pending; } notify_slot_t;
@@ -100,6 +106,7 @@ static notify_slot_t g_slot_ant     = {0};
 static notify_slot_t g_slot_bat     = {0};
 static notify_slot_t g_slot_physics = {0};
 static notify_slot_t g_slot_wheel   = {0};
+static notify_slot_t g_slot_scan    = {0};
 
 static struct ble_npl_callout g_callout_pitot;
 static struct ble_npl_callout g_callout_imu;
@@ -108,6 +115,7 @@ static struct ble_npl_callout g_callout_ant;
 static struct ble_npl_callout g_callout_bat;
 static struct ble_npl_callout g_callout_physics;
 static struct ble_npl_callout g_callout_wheel;
+static struct ble_npl_callout g_callout_scan;
 static struct ble_npl_mutex   g_notify_mutex;
 
 static void callout_pitot  (struct ble_npl_event *ev);
@@ -117,6 +125,7 @@ static void callout_ant    (struct ble_npl_event *ev);
 static void callout_bat    (struct ble_npl_event *ev);
 static void callout_physics(struct ble_npl_event *ev);
 static void callout_wheel  (struct ble_npl_event *ev);
+static void callout_scan   (struct ble_npl_event *ev);
 
 // ─── BLE state ────────────────────────────────────────────────────────────────
 static uint16_t g_conn_handle    = BLE_HS_CONN_HANDLE_NONE;
@@ -132,6 +141,7 @@ static bool     g_notify_ant     = false;
 static bool     g_notify_battery = false;
 static bool     g_notify_physics = false;
 static bool     g_notify_wheel   = false;
+static bool     g_notify_scan    = false;
 
 static const char *DEVICE_NAME = "AeroDrag Pro";
 
@@ -177,7 +187,8 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_DISCONNECT:
         g_conn_handle  = BLE_HS_CONN_HANDLE_NONE;
         g_notify_pitot = g_notify_imu = g_notify_env = g_notify_ant =
-        g_notify_battery = g_notify_physics = g_notify_wheel = false;
+        g_notify_battery = g_notify_physics = g_notify_wheel =
+        g_notify_scan = false;
         ble_advertise();
         break;
     case BLE_GAP_EVENT_SUBSCRIBE:
@@ -195,6 +206,8 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
             g_notify_physics = event->subscribe.cur_notify;
         else if (event->subscribe.attr_handle == g_chr_wheelstream_h)
             g_notify_wheel = event->subscribe.cur_notify;
+        else if (event->subscribe.attr_handle == g_chr_sensorscan_h)
+            g_notify_scan = event->subscribe.cur_notify;
         break;
     default:
         break;
@@ -403,6 +416,19 @@ static int wheelcmd_access_cb(uint16_t conn_handle, uint16_t attr_handle,
     return 0;
 }
 
+// ─── SENSOR_SCAN (0xaa0e) callback — WRITE start/stop discovery (v0.2.2) ──────
+static int sensor_scan_access_cb(uint16_t conn_handle, uint16_t attr_handle,
+                                 struct ble_gatt_access_ctxt *ctxt, void *arg)
+{
+    (void)conn_handle; (void)attr_handle; (void)arg;
+    if (ctxt->op != BLE_GATT_ACCESS_OP_WRITE_CHR) return 0;
+    if (OS_MBUF_PKTLEN(ctxt->om) < 1) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+    uint8_t v = 0;
+    os_mbuf_copydata(ctxt->om, 0, 1, &v);
+    ble_sensors_set_discovery(v == 0x01);
+    return 0;
+}
+
 // ─── GATT service table ───────────────────────────────────────────────────────
 static const struct ble_gatt_svc_def GATT_SERVICES[] = {
     {
@@ -493,6 +519,13 @@ static const struct ble_gatt_svc_def GATT_SERVICES[] = {
                 .val_handle = &g_chr_wheelcmd_h,
                 .flags      = BLE_GATT_CHR_F_WRITE,
             },
+            {
+                // Sensor discovery (v0.2.2): WRITE start/stop + NOTIFY entries
+                .uuid       = &CHR_SENSOR_SCAN.u,
+                .access_cb  = sensor_scan_access_cb,
+                .val_handle = &g_chr_sensorscan_h,
+                .flags      = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_NOTIFY,
+            },
             { 0 }
         }
     },
@@ -540,6 +573,7 @@ esp_err_t ble_server_init(aerodrag_sensors_t *sensors, SemaphoreHandle_t mutex,
     ble_npl_callout_init(&g_callout_bat,     eq, callout_bat,     NULL);
     ble_npl_callout_init(&g_callout_physics, eq, callout_physics, NULL);
     ble_npl_callout_init(&g_callout_wheel,   eq, callout_wheel,   NULL);
+    ble_npl_callout_init(&g_callout_scan,    eq, callout_scan,    NULL);
 
     nimble_port_freertos_init(nimble_host_task);
     return ESP_OK;
@@ -566,6 +600,7 @@ MAKE_CALLOUT_FN(ant,     g_slot_ant,     g_chr_ant_h,     g_notify_ant)
 MAKE_CALLOUT_FN(bat,     g_slot_bat,     g_chr_battery_h,     g_notify_battery)
 MAKE_CALLOUT_FN(physics, g_slot_physics, g_chr_physics_h,     g_notify_physics)
 MAKE_CALLOUT_FN(wheel,   g_slot_wheel,   g_chr_wheelstream_h, g_notify_wheel)
+MAKE_CALLOUT_FN(scan,    g_slot_scan,    g_chr_sensorscan_h,  g_notify_scan)
 
 static void fill_and_schedule(notify_slot_t *slot,
                                struct ble_npl_callout *callout,
@@ -642,6 +677,22 @@ void ble_notify_wheel_stream(const void *data, uint8_t len)
 {
     if (!g_notify_wheel) return;
     fill_and_schedule(&g_slot_wheel, &g_callout_wheel, data, len);
+}
+
+// ─── Sensor discovery notify (0xaa0e) — contract v0.2.2 ──────────────────────
+// Una entry per sensore scoperto: type(1) + mac[6] + rssi(1) + nameLen(1) + name.
+void ble_notify_sensor_scan(uint8_t type, const uint8_t *mac_be, int8_t rssi,
+                            const char *name, uint8_t name_len)
+{
+    if (!g_notify_scan) return;
+    uint8_t buf[32];
+    if (name_len > 22) name_len = 22;            /* 9 byte header + name ≤ 32 */
+    buf[0] = type;
+    memcpy(&buf[1], mac_be, 6);
+    buf[7] = (uint8_t)rssi;
+    buf[8] = name_len;
+    if (name_len && name) memcpy(&buf[9], name, name_len);
+    fill_and_schedule(&g_slot_scan, &g_callout_scan, buf, (uint8_t)(9 + name_len));
 }
 
 bool ble_is_connected(void)

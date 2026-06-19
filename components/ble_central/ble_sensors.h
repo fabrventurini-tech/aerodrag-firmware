@@ -142,6 +142,11 @@ void ble_sensors_wheel_command(uint8_t cmd);
  * Impostata dall'app via CONFIG 0xaa08; il firmware la propaga al sensore. */
 void ble_sensors_set_rider_mass(float kg);
 
+/* Discovery sensori (contract v0.2.2, fix iOS). Quando attiva, il central
+ * scansiona i sensori target SENZA connettersi e notifica all'app ogni MAC
+ * scoperto via 0xaa0e. Auto-stop dopo ~15 s. on=false ferma subito. */
+void ble_sensors_set_discovery(bool on);
+
 /*
  * ble_sensors_set_scan_enabled()
  * ------------------------------
