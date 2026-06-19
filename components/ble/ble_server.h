@@ -66,11 +66,29 @@ static const ble_uuid128_t CHR_BATTERY = BLE_UUID128_INIT(
     0xfb, 0x34, 0x9b, 0x5f, 0x80, 0x00, 0x00, 0x80,
     0x00, 0x10, 0x00, 0x00, 0x0a, 0xaa, 0x00, 0x00);
 
-static uint16_t g_chr_identity_h = 0;
-static uint16_t g_chr_version_h  = 0;
-static uint16_t g_chr_ota_h      = 0;
-static uint16_t g_chr_config_h   = 0;
-static uint16_t g_chr_physics_h  = 0;
+// SENSOR_WHITELIST (0xaa0b): elenco sensori autorizzati — READ + WRITE (v0.2.0)
+static const ble_uuid128_t CHR_SENSOR_WL = BLE_UUID128_INIT(
+    0xfb, 0x34, 0x9b, 0x5f, 0x80, 0x00, 0x00, 0x80,
+    0x00, 0x10, 0x00, 0x00, 0x0b, 0xaa, 0x00, 0x00);
+
+// WHEEL_STREAM (0xaa0c): relay stream sensore ruota Crr — NOTIFY 16 B (v0.2.0)
+static const ble_uuid128_t CHR_WHEEL_STREAM = BLE_UUID128_INIT(
+    0xfb, 0x34, 0x9b, 0x5f, 0x80, 0x00, 0x00, 0x80,
+    0x00, 0x10, 0x00, 0x00, 0x0c, 0xaa, 0x00, 0x00);
+
+// WHEEL_CMD (0xaa0d): comando coast-down → sensore ruota — WRITE 1 B (v0.2.0)
+static const ble_uuid128_t CHR_WHEEL_CMD = BLE_UUID128_INIT(
+    0xfb, 0x34, 0x9b, 0x5f, 0x80, 0x00, 0x00, 0x80,
+    0x00, 0x10, 0x00, 0x00, 0x0d, 0xaa, 0x00, 0x00);
+
+static uint16_t g_chr_identity_h    = 0;
+static uint16_t g_chr_version_h     = 0;
+static uint16_t g_chr_ota_h         = 0;
+static uint16_t g_chr_config_h      = 0;
+static uint16_t g_chr_physics_h     = 0;
+static uint16_t g_chr_sensorwl_h    = 0;
+static uint16_t g_chr_wheelstream_h = 0;
+static uint16_t g_chr_wheelcmd_h    = 0;
 
 // Notify slot — 32 bytes to accommodate physics payload (28 B)
 typedef struct { uint8_t data[32]; uint8_t len; bool pending; } notify_slot_t;
@@ -81,6 +99,7 @@ static notify_slot_t g_slot_env     = {0};
 static notify_slot_t g_slot_ant     = {0};
 static notify_slot_t g_slot_bat     = {0};
 static notify_slot_t g_slot_physics = {0};
+static notify_slot_t g_slot_wheel   = {0};
 
 static struct ble_npl_callout g_callout_pitot;
 static struct ble_npl_callout g_callout_imu;
@@ -88,6 +107,7 @@ static struct ble_npl_callout g_callout_env;
 static struct ble_npl_callout g_callout_ant;
 static struct ble_npl_callout g_callout_bat;
 static struct ble_npl_callout g_callout_physics;
+static struct ble_npl_callout g_callout_wheel;
 static struct ble_npl_mutex   g_notify_mutex;
 
 static void callout_pitot  (struct ble_npl_event *ev);
@@ -96,6 +116,7 @@ static void callout_env    (struct ble_npl_event *ev);
 static void callout_ant    (struct ble_npl_event *ev);
 static void callout_bat    (struct ble_npl_event *ev);
 static void callout_physics(struct ble_npl_event *ev);
+static void callout_wheel  (struct ble_npl_event *ev);
 
 // ─── BLE state ────────────────────────────────────────────────────────────────
 static uint16_t g_conn_handle    = BLE_HS_CONN_HANDLE_NONE;
@@ -110,6 +131,7 @@ static bool     g_notify_env     = false;
 static bool     g_notify_ant     = false;
 static bool     g_notify_battery = false;
 static bool     g_notify_physics = false;
+static bool     g_notify_wheel   = false;
 
 static const char *DEVICE_NAME = "AeroDrag Pro";
 
@@ -155,7 +177,7 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_DISCONNECT:
         g_conn_handle  = BLE_HS_CONN_HANDLE_NONE;
         g_notify_pitot = g_notify_imu = g_notify_env = g_notify_ant =
-        g_notify_battery = g_notify_physics = false;
+        g_notify_battery = g_notify_physics = g_notify_wheel = false;
         ble_advertise();
         break;
     case BLE_GAP_EVENT_SUBSCRIBE:
@@ -171,6 +193,8 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
             g_notify_battery = event->subscribe.cur_notify;
         else if (event->subscribe.attr_handle == g_chr_physics_h)
             g_notify_physics = event->subscribe.cur_notify;
+        else if (event->subscribe.attr_handle == g_chr_wheelstream_h)
+            g_notify_wheel = event->subscribe.cur_notify;
         break;
     default:
         break;
@@ -321,6 +345,63 @@ static int config_access_cb(uint16_t conn_handle, uint16_t attr_handle,
     return 0;
 }
 
+// ─── SENSOR_WHITELIST (0xaa0b) callback — READ + WRITE (contract v0.2.0) ──────
+// WRITE payload: uint8 count + count×(uint8 type + uint8 mac[6]).
+// type: 1=power, 2=csc, 3=hr, 4=wheel. mac[6] big-endian ("AA:BB:..").
+static int sensor_wl_access_cb(uint16_t conn_handle, uint16_t attr_handle,
+                                struct ble_gatt_access_ctxt *ctxt, void *arg)
+{
+    (void)conn_handle; (void)attr_handle; (void)arg;
+
+    if (ctxt->op == BLE_GATT_ACCESS_OP_READ_CHR) {
+        sensor_wl_entry_t wl[SENSOR_WL_MAX];
+        uint8_t n = ble_sensors_get_whitelist(wl, SENSOR_WL_MAX);
+        uint8_t out[1 + SENSOR_WL_MAX * 7];
+        out[0] = n;
+        for (uint8_t i = 0; i < n; i++) {
+            out[1 + i*7] = wl[i].type;
+            memcpy(&out[2 + i*7], wl[i].mac, 6);
+        }
+        os_mbuf_append(ctxt->om, out, (uint16_t)(1 + n * 7));
+        return 0;
+    }
+    if (ctxt->op != BLE_GATT_ACCESS_OP_WRITE_CHR) return 0;
+
+    uint16_t len = OS_MBUF_PKTLEN(ctxt->om);
+    if (len < 1) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+
+    uint8_t buf[1 + SENSOR_WL_MAX * 7];
+    uint16_t copy = (len < sizeof(buf)) ? len : sizeof(buf);
+    os_mbuf_copydata(ctxt->om, 0, copy, buf);
+
+    uint8_t count = buf[0];
+    if (count > SENSOR_WL_MAX) return BLE_ATT_ERR_VALUE_NOT_ALLOWED;
+    if ((uint16_t)(1 + count * 7) > copy) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+
+    sensor_wl_entry_t wl[SENSOR_WL_MAX] = {0};
+    for (uint8_t i = 0; i < count; i++) {
+        wl[i].type = buf[1 + i*7];
+        memcpy(wl[i].mac, &buf[2 + i*7], 6);
+    }
+    ble_sensors_set_whitelist(wl, count);
+    return 0;
+}
+
+// ─── WHEEL_CMD (0xaa0d) callback — WRITE (contract v0.2.0) ────────────────────
+// Inoltra il comando coast-down (1 byte) al sensore ruota via 0xBB03.
+static int wheelcmd_access_cb(uint16_t conn_handle, uint16_t attr_handle,
+                              struct ble_gatt_access_ctxt *ctxt, void *arg)
+{
+    (void)conn_handle; (void)attr_handle; (void)arg;
+    if (ctxt->op != BLE_GATT_ACCESS_OP_WRITE_CHR) return 0;
+    uint16_t len = OS_MBUF_PKTLEN(ctxt->om);
+    if (len < 1) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+    uint8_t cmd = 0;
+    os_mbuf_copydata(ctxt->om, 0, 1, &cmd);
+    ble_sensors_wheel_command(cmd);
+    return 0;
+}
+
 // ─── GATT service table ───────────────────────────────────────────────────────
 static const struct ble_gatt_svc_def GATT_SERVICES[] = {
     {
@@ -390,6 +471,27 @@ static const struct ble_gatt_svc_def GATT_SERVICES[] = {
                 .val_handle = &g_chr_battery_h,
                 .flags      = BLE_GATT_CHR_F_NOTIFY,
             },
+            {
+                // Sensor whitelist (v0.2.0): l'app scrive i sensori autorizzati
+                .uuid       = &CHR_SENSOR_WL.u,
+                .access_cb  = sensor_wl_access_cb,
+                .val_handle = &g_chr_sensorwl_h,
+                .flags      = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE,
+            },
+            {
+                // Wheel stream relay (v0.2.0): NOTIFY 16 B
+                .uuid       = &CHR_WHEEL_STREAM.u,
+                .access_cb  = chr_access_cb,
+                .val_handle = &g_chr_wheelstream_h,
+                .flags      = BLE_GATT_CHR_F_NOTIFY,
+            },
+            {
+                // Wheel coast-down command (v0.2.0): WRITE 1 B
+                .uuid       = &CHR_WHEEL_CMD.u,
+                .access_cb  = wheelcmd_access_cb,
+                .val_handle = &g_chr_wheelcmd_h,
+                .flags      = BLE_GATT_CHR_F_WRITE,
+            },
             { 0 }
         }
     },
@@ -436,6 +538,7 @@ esp_err_t ble_server_init(aerodrag_sensors_t *sensors, SemaphoreHandle_t mutex,
     ble_npl_callout_init(&g_callout_ant,     eq, callout_ant,     NULL);
     ble_npl_callout_init(&g_callout_bat,     eq, callout_bat,     NULL);
     ble_npl_callout_init(&g_callout_physics, eq, callout_physics, NULL);
+    ble_npl_callout_init(&g_callout_wheel,   eq, callout_wheel,   NULL);
 
     nimble_port_freertos_init(nimble_host_task);
     return ESP_OK;
@@ -459,8 +562,9 @@ MAKE_CALLOUT_FN(pitot,   g_slot_pitot,   g_chr_pitot_h,   g_notify_pitot)
 MAKE_CALLOUT_FN(imu,     g_slot_imu,     g_chr_imu_h,     g_notify_imu)
 MAKE_CALLOUT_FN(env,     g_slot_env,     g_chr_env_h,     g_notify_env)
 MAKE_CALLOUT_FN(ant,     g_slot_ant,     g_chr_ant_h,     g_notify_ant)
-MAKE_CALLOUT_FN(bat,     g_slot_bat,     g_chr_battery_h, g_notify_battery)
-MAKE_CALLOUT_FN(physics, g_slot_physics, g_chr_physics_h, g_notify_physics)
+MAKE_CALLOUT_FN(bat,     g_slot_bat,     g_chr_battery_h,     g_notify_battery)
+MAKE_CALLOUT_FN(physics, g_slot_physics, g_chr_physics_h,     g_notify_physics)
+MAKE_CALLOUT_FN(wheel,   g_slot_wheel,   g_chr_wheelstream_h, g_notify_wheel)
 
 static void fill_and_schedule(notify_slot_t *slot,
                                struct ble_npl_callout *callout,
@@ -528,6 +632,15 @@ void ble_notify_physics(const aerodrag_physics_t *p)
         memset(v, 0, sizeof(v));
     }
     fill_and_schedule(&g_slot_physics, &g_callout_physics, v, sizeof(v));
+}
+
+// ─── Wheel stream relay notify (0xaa0c) — contract v0.2.0 ────────────────────
+// Relay grezzo dello stream del sensore ruota Crr (16 B: speedMs, accelMs2,
+// tempC, vibRMS). Chiamato dal central (ble_sensors.c) sui dati di 0xBB01.
+void ble_notify_wheel_stream(const void *data, uint8_t len)
+{
+    if (!g_notify_wheel) return;
+    fill_and_schedule(&g_slot_wheel, &g_callout_wheel, data, len);
 }
 
 bool ble_is_connected(void)

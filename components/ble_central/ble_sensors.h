@@ -106,6 +106,38 @@ void ble_sensors_trigger_lap(void);
  */
 void ble_sensors_set_wheel_circumference(float meters);
 
+/* ── Sensor whitelist (contract v0.2.0 §2) ───────────────────────────────────
+ * I sensori esterni si bondano SOLO al firmware e SOLO se il loro MAC è nella
+ * whitelist scritta dall'app via BLE 0xaa0b. Anti cross-talk dalle bici vicine.
+ * type: 1=power(0x1818), 2=csc(0x1816), 3=hr(0x180D), 4=wheel-Crr(0xBB00).
+ * mac[6] big-endian (mac[0]=AA per "AA:BB:CC:DD:EE:FF").
+ */
+#define SENSOR_WL_MAX 5
+
+#define SENSOR_TYPE_POWER 1
+#define SENSOR_TYPE_CSC   2
+#define SENSOR_TYPE_HR    3
+#define SENSOR_TYPE_WHEEL 4
+
+typedef struct {
+    uint8_t type;
+    uint8_t mac[6];   /* big-endian, come la stringa "AA:BB:CC:DD:EE:FF" */
+} sensor_wl_entry_t;
+
+/* Imposta la whitelist (sostituisce quella corrente), la persiste in NVS,
+ * disconnette gli slot non più ammessi e riavvia lo scan. */
+void ble_sensors_set_whitelist(const sensor_wl_entry_t *entries, uint8_t count);
+
+/* Copia la whitelist corrente in out (max entries). Ritorna il numero scritto. */
+uint8_t ble_sensors_get_whitelist(sensor_wl_entry_t *out, uint8_t max);
+
+/* Carica la whitelist da NVS. Chiamare in ble_sensors_init(). */
+void ble_sensors_load_whitelist(void);
+
+/* Inoltra un comando coast-down (0x01/0x02/0x03/0xFF) al sensore ruota Crr
+ * tramite la sua caratteristica 0xBB03. Chiamato dalla WRITE su 0xaa0d. */
+void ble_sensors_wheel_command(uint8_t cmd);
+
 /*
  * ble_sensors_set_scan_enabled()
  * ------------------------------
