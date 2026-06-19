@@ -1,7 +1,7 @@
 # AeroDrag — Interface Contract
 
 ```
-contract: v0.1.4
+contract: v0.2.0
 owner:    aerodrag-firmware (questa repo è la fonte di verità unica)
 status:   ratified
 date:     2026-06-16
@@ -71,11 +71,18 @@ MTU richiesto ≥ 53 (si negozia 185): PHYSICS=28 B, READ IDENTITY=50 B.
 | CONFIG   | `aa08` | R+W | on-connect | 12 | `float massKg, crr, wheelCircM` |
 | PHYSICS  | `aa09` | N   | 10 Hz | 28 | `float cda[m²], vAirMs[m/s], rho[kg/m³], pctAero[%0-100], pAeroW, pRollingW, pGravityW` |
 | BATTERY  | `aa0a` | N   | 0.1 Hz | 1 | `uint8 batteryPct [0-100]` |
+| SENSOR_WHITELIST | `aa0b` | R+W | on-pair | var | `uint8 count` + count×(`uint8 type` + `uint8 mac[6]`). type: 1=power,2=csc,3=hr,4=wheel. Firmware central connette **solo** a questi MAC |
+| WHEEL_STREAM | `aa0c` | N | 10 Hz | 16 | `float speedMs, accelMs2, tempC, vibRMS` — relay dei dati grezzi del sensore ruota durante la calibrazione Crr |
+| WHEEL_CMD | `aa0d` | W | on-demand | 1 | `uint8` comando coast-down: 0x01 indoor, 0x02 outdoor-A, 0x03 outdoor-B, 0xFF cancel → inoltrato dal firmware al sensore ruota |
 
 ### Vincoli `CONFIG` (0xaa08)
 - **12 byte**: `massKg`∈[33,200], `crr`∈[0.001,0.025], `wheelCircM`∈[1.0,2.5].
-- Il device è **proprietario** della circonferenza ruota (`wheelCircM`): l'app la
-  **legge** in connect; massa e Crr sono guidati dall'app (profili atleta).
+- **L'app è autorevole** per **tutti e tre** i parametri (`massKg`, `crr`,
+  `wheelCircM`): li calcola/imposta e li **scrive** (massa+Crr dai profili atleta;
+  `crr` dalla calibrazione coast-down; `wheelCircM` dall'impostazione utente). Il
+  firmware li **persiste in NVS e li integra solo nella fisica** (e usa
+  `wheelCircM` per la velocità da CSC) — non li calcola né li possiede. La READ è
+  solo informativa/echo (es. valore di default al primo avvio).
 - Fuori range → errore ATT, **nessun campo** scritto (clampare lato app).
 - Retro-compatibilità: una WRITE di **8 byte** aggiorna solo `massKg`+`crr`.
 
@@ -92,10 +99,31 @@ MTU richiesto ≥ 53 (si negozia 185): PHYSICS=28 B, READ IDENTITY=50 B.
   e usarlo come `device`; coincide con quello che il firmware usa in WiFi diretto.
 - **Disaccoppiare identità e trasporto BLE**: l'identificatore di connessione BLE
   è platform-specific (su iOS è un UUID CoreBluetooth, **non** il MAC), quindi
-  **NON** va usato come identità coach né confrontato col MAC. Il filtro/whitelist
-  di connessione usa l'id BLE nativo (`device.id`); l'identità arriva da `0xaa05`.
-- Il QR (`AERODRAG://PAIR/<MAC>`) è una **whitelist opzionale**, non la fonte
-  dell'identità runtime: l'identità autorevole è sempre quella letta da `0xaa05`.
+  **NON** va usato come identità coach né confrontato col MAC. L'identità arriva
+  sempre da `0xaa05`.
+- **Pairing — QR come fonte primaria (v0.2.0)**: l'accoppiamento parte dalla
+  scansione del QR `AERODRAG://PAIR/<MAC>`, che fornisce il **MAC autorevole**.
+  Poiché su iOS non ci si può connettere per MAC, l'app: scansiona `0xAA00` →
+  si connette a un candidato → **legge `device_id` da `0xaa05`** → tiene la
+  connessione **solo se `== MAC del QR`** (su Android vale anche la fast-path
+  `device.id == MAC`). La selezione manuale dalla lista BLE è un fallback.
+
+### Sensori esterni: whitelist & relay (v0.2.0)
+Principio: i sensori esterni (power `0x1818`, CSC `0x1816`, HR `0x180D`, sensore
+ruota Crr `0xBB00`) si **bondano SOLO al firmware**. L'app è **broker di pairing
++ specchio**: non apre connessioni dati ai sensori (elimina il cross-talk dalle
+bici vicine; il firmware resta l'unica fonte di verità).
+- **Pairing**: l'app scansiona per far **scegliere** il sensore all'utente, ne
+  ottiene il MAC e scrive l'elenco autorizzato in **`SENSOR_WHITELIST` (0xaa0b)**.
+  Il central del firmware si connette **esclusivamente** ai MAC in whitelist
+  (non più "il primo trovato").
+- **Crr — calibrazione nell'app, dati via firmware**: il sensore ruota si bonda
+  al firmware; durante il coast-down il firmware **relaya** lo stream grezzo su
+  **`WHEEL_STREAM` (0xaa0c)** e inoltra i comandi dell'app da **`WHEEL_CMD`
+  (0xaa0d)** al sensore. L'app esegue il fit e **calcola il `crr`**, poi lo
+  **scrive in `CONFIG 0xaa08`** (vedi sopra). Il `wheelCircM` è impostato
+  dall'app e scritto in `CONFIG`. Né `crr` né `wheelCircM` transitano da
+  `WHEEL_STREAM`: lì passano **solo** i dati grezzi.
 
 ---
 
@@ -270,6 +298,23 @@ Costanti: `g = 9.80665`, `RHO_STD = 1.225`, CdA valido in `[0.10, 0.60]` (device
 ---
 
 ## 8. Changelog
+
+### v0.2.0 — 2026-06-17
+Nuovo modello pairing & sensori (cambiamento comportamentale → MINOR). Decisioni
+dell'owner del progetto, propagate sulla seam firmware↔new.
+- **Pairing device — QR primario** (supera v0.1.4 "opzionale"): il QR fornisce il
+  MAC autorevole; la connessione conferma l'identità leggendo `0xaa05` (iOS-safe).
+- **Sensori bondati SOLO al firmware**: nuova `SENSOR_WHITELIST` (0xaa0b); il
+  central del firmware connette solo ai MAC scelti dall'app (basta cambiare il
+  filtro in `ble_sensors.c`, oggi "primo trovato" → anti cross-talk). L'app non
+  apre più connessioni dati ai sensori (era uno specchio errato).
+- **Crr — calibrazione app, dati via firmware**: nuove `WHEEL_STREAM` (0xaa0c,
+  relay grezzo) e `WHEEL_CMD` (0xaa0d, comandi coast-down). L'app calcola `crr` e
+  lo scrive in `CONFIG`.
+- **`CONFIG 0xaa08` — app autorevole per tutti e tre i parametri** (`massKg`,
+  `crr`, `wheelCircM`); il firmware li integra solo nella fisica. (Prima
+  `wheelCircM` era "device-owned".)
+- Rende **vestigiale** la whitelist sensori lato-app: sostituita da `0xaa0b`.
 
 ### v0.1.4 — 2026-06-17
 Audit pairing. Chiarimento §2, nessuna rottura di wire:
