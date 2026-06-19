@@ -339,6 +339,7 @@ static int config_access_cb(uint16_t conn_handle, uint16_t attr_handle,
     g_cal_ptr->wheel_circ_m = wheel_m;
     cal_save(g_cal_ptr);
     ble_sensors_set_wheel_circumference(wheel_m);
+    ble_sensors_set_rider_mass(mass_kg);   /* propaga al sensore ruota (0xBB04) */
 
     ESP_LOGI("ble_cfg", "Config updated: mass=%.1f kg  crr=%.4f  wheel=%.3f m",
              mass_kg, crr, wheel_m);

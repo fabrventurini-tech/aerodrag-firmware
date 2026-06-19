@@ -138,6 +138,10 @@ void ble_sensors_load_whitelist(void);
  * tramite la sua caratteristica 0xBB03. Chiamato dalla WRITE su 0xaa0d. */
 void ble_sensors_wheel_command(uint8_t cmd);
 
+/* Massa rider+bici [kg] inoltrata al sensore ruota (0xBB04) per il coast-down.
+ * Impostata dall'app via CONFIG 0xaa08; il firmware la propaga al sensore. */
+void ble_sensors_set_rider_mass(float kg);
+
 /*
  * ble_sensors_set_scan_enabled()
  * ------------------------------

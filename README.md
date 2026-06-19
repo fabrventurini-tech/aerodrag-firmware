@@ -127,7 +127,7 @@ aerodrag-firmware/
 
 ## UUID BLE (devono coincidere con l'app React Native)
 
-Contratto: **v0.1.0** — sorgente di verità in [`docs/CONTRACT.md`](docs/CONTRACT.md).
+Contratto: **v0.2.0** — sorgente di verità in [`docs/CONTRACT.md`](docs/CONTRACT.md).
 
 | UUID | Flags | Dati | Frequenza |
 |---|---|---|---|
@@ -141,6 +141,9 @@ Contratto: **v0.1.0** — sorgente di verità in [`docs/CONTRACT.md`](docs/CONTR
 | `0000aa08-...-aa00` | R+W | float32[3]: massKg, crr, wheelCircM (12 B) | on-connect |
 | `0000aa09-...-aa00` | N | float32[7]: cda, vAirMs, rho, pctAero(0-100), pAeroW, pRollingW, pGravityW (28 B) | 10 Hz |
 | `0000aa0a-...-aa00` | N | uint8: battery % | 0.1 Hz |
+| `0000aa0b-...-aa00` | R+W | sensor whitelist: count + N×(type + mac[6]) | on-pair |
+| `0000aa0c-...-aa00` | N | float32[4]: speedMs, accelMs2, tempC, vibRMS (relay ruota Crr) | 10 Hz |
+| `0000aa0d-...-aa00` | W | uint8: comando coast-down → sensore ruota | on-demand |
 
 ## Troubleshooting
 

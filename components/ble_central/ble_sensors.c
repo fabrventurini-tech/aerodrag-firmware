@@ -54,6 +54,7 @@ extern void ble_notify_wheel_stream(const void *data, uint8_t len);
 #define UUID_SVC_WHEEL        0xBB00u   /* AeroDrag Wheel service              */
 #define UUID_CHR_WHEEL_STREAM 0xBB01u   /* stream grezzo (NOTIFY, 16 B)        */
 #define UUID_CHR_WHEEL_CMD    0xBB03u   /* comando coast-down (WRITE, 1 B)     */
+#define UUID_CHR_WHEEL_CONFIG 0xBB04u   /* config (WRITE, float circ + mass)   */
 
 /* type (whitelist) → service UUID 16-bit */
 static uint16_t type_to_svc(uint8_t type) {
@@ -87,6 +88,7 @@ typedef struct {
     uint16_t     svc_end_handle;
     uint16_t     chr_val_handle;    /* handle valore caratteristica (notify) */
     uint16_t     cmd_val_handle;    /* solo wheel: handle 0xBB03 (cmd write)  */
+    uint16_t     cfg_val_handle;    /* solo wheel: handle 0xBB04 (config write)*/
     slot_state_t state;
 } sensor_slot_t;
 
@@ -125,6 +127,7 @@ static SemaphoreHandle_t s_mutex;   /* passato da main.c = g_sensors_mutex  */
 /* ─────────────────────────────────────────────────────────────────────────── */
 
 static float    s_wheel_circ_m   = 2.105f;  /* 700c x 25mm default */
+static float    s_rider_mass_kg  = 78.0f;   /* rider+bici, inoltrata a 0xBB04 */
 static uint32_t s_wheel_revs_prev;
 static uint16_t s_wheel_time_prev;
 static bool     s_wheel_init;
@@ -315,6 +318,40 @@ static void parse_hr_meas(const uint8_t *d, uint16_t len) {
 /*  GATT DISCOVERY CALLBACKS                                                     */
 /* ─────────────────────────────────────────────────────────────────────────── */
 
+/* Scrive la config (circonferenza + massa) sul sensore ruota via 0xBB04.
+ * Layout: float32 tireCircM + float32 massKg (8 B, little-endian). */
+static void wheel_push_config(void) {
+    for (int i = 0; i < N_SLOTS; i++) {
+        if (s_slots[i].state == SLOT_READY &&
+            s_slots[i].svc_uuid == UUID_SVC_WHEEL &&
+            s_slots[i].cfg_val_handle != 0) {
+            float cfg[2] = { s_wheel_circ_m, s_rider_mass_kg };
+            ble_gattc_write_flat(s_slots[i].conn_handle,
+                                 s_slots[i].cfg_val_handle,
+                                 cfg, sizeof(cfg), NULL, NULL);
+            ESP_LOGI(TAG, "Wheel config inviata: circ=%.3f m mass=%.1f kg",
+                     s_wheel_circ_m, s_rider_mass_kg);
+            return;
+        }
+    }
+}
+
+/* Wheel: discovery della caratteristica config 0xBB04 → salva handle e invia */
+static int on_disc_wheel_cfg(uint16_t conn_h,
+                             const struct ble_gatt_error *err,
+                             const struct ble_gatt_chr *chr, void *arg)
+{
+    (void)conn_h;
+    sensor_slot_t *slot = (sensor_slot_t *)arg;
+    if (!slot) return 0;
+    if (err->status == 0 && chr &&
+        ble_uuid_u16(&chr->uuid.u) == UUID_CHR_WHEEL_CONFIG) {
+        slot->cfg_val_handle = chr->val_handle;
+        wheel_push_config();   /* invia subito circonferenza+massa correnti */
+    }
+    return 0;
+}
+
 /* Wheel: discovery della caratteristica comando 0xBB03 → salva cmd_val_handle */
 static int on_disc_wheel_cmd(uint16_t conn_h,
                              const struct ble_gatt_error *err,
@@ -352,6 +389,10 @@ static int on_write_cccd(uint16_t conn_h,
             ble_gattc_disc_chrs_by_uuid(conn_h,
                                         slot->svc_start_handle, slot->svc_end_handle,
                                         &cmd_uuid.u, on_disc_wheel_cmd, slot);
+            ble_uuid16_t cfg_uuid = BLE_UUID16_INIT(UUID_CHR_WHEEL_CONFIG);
+            ble_gattc_disc_chrs_by_uuid(conn_h,
+                                        slot->svc_start_handle, slot->svc_end_handle,
+                                        &cfg_uuid.u, on_disc_wheel_cfg, slot);
         }
     } else {
         ESP_LOGW(TAG, "Slot[%td] CCCD write errore %d, disconnetto",
@@ -758,4 +799,10 @@ void ble_sensors_trigger_lap(void) {
 
 void ble_sensors_set_wheel_circumference(float meters) {
     s_wheel_circ_m = meters;
+    wheel_push_config();   /* propaga al sensore ruota se connesso (0xBB04) */
+}
+
+void ble_sensors_set_rider_mass(float kg) {
+    s_rider_mass_kg = kg;
+    wheel_push_config();
 }
