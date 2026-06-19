@@ -1,7 +1,7 @@
 # AeroDrag — Interface Contract
 
 ```
-contract: v0.2.0
+contract: v0.2.1
 owner:    aerodrag-firmware (questa repo è la fonte di verità unica)
 status:   ratified
 date:     2026-06-16
@@ -48,6 +48,10 @@ SemVer del contratto:
 | D | pi → new / pi → coach | WebSocket `/coach` (cmd + eventi) | §4 |
 | E | pi → coach | HTTP `/receive` :8081 (sessione) | §5 |
 | F | coach ↔ new | schema dati condiviso | §5 |
+| G | firmware ↔ wheel | BLE GATT (svc `0xBB00`) | §2 |
+
+Componente gestito aggiuntivo: **`wheel-fw/`** (firmware sensore ruota Crr,
+nRF52840) — repo figlia che vive nella repo madre, vedi confine G.
 
 Tutti i multi-byte sono **little-endian**; i float sono **IEEE-754 32 bit**.
 Le unità sono SI salvo dove indicato (velocità di rete in km/h).
@@ -124,6 +128,22 @@ bici vicine; il firmware resta l'unica fonte di verità).
   **scrive in `CONFIG 0xaa08`** (vedi sopra). Il `wheelCircM` è impostato
   dall'app e scritto in `CONFIG`. Né `crr` né `wheelCircM` transitano da
   `WHEEL_STREAM`: lì passano **solo** i dati grezzi.
+
+#### Confine firmware ↔ wheel — servizio `0xBB00` (lato sensore, v0.2.1)
+Il firmware del sensore ruota Crr (nRF52840 + ICM-42688) è un **componente
+gestito** della repo madre: vive in [`wheel-fw/`](../wheel-fw/) (firmware
+separato, **non** parte del build ESP-IDF). Espone il servizio `0xBB00` che
+l'ESP32 (central) consuma:
+
+| CHR | UUID | Flags | Bytes | Payload |
+|-----|------|-------|-------|---------|
+| STREAM | `0xBB01` | NOTIFY 10 Hz | 16 | `float speedMs, accelMs2, tempC, vibRMS` → relay su `0xaa0c` |
+| RESULT | `0xBB02` | NOTIFY | 6 | `float crr + uint8 quality + uint8 runIdx` (legacy, non usato: il Crr lo calcola l'app) |
+| CMD | `0xBB03` | WRITE | 1 | `uint8` coast-down (0x01/0x02/0x03/0xFF) ← inoltrato da `0xaa0d` |
+| CONFIG | `0xBB04` | R+W | 8 | `float tireCircM + float massKg` ← scritto dall'ESP32 da `CONFIG 0xaa08` |
+
+Governance: modifiche a `0xBB00` passano dalla seam `firmware↔wheel` (le due parti
+sono nello stesso repo madre, ma restano firmware distinti) e dalla ratifica qui.
 
 ---
 
@@ -294,10 +314,18 @@ Costanti: `g = 9.80665`, `RHO_STD = 1.225`, CdA valido in `[0.10, 0.60]` (device
 | coach (Electron) | 1.0.0 |
 | coach pc-receiver | 1.0.0 |
 | new (app) | 1.0.0 (Expo ~56) |
+| wheel-fw (sensore ruota Crr) | 0.1.0 (skeleton) |
 
 ---
 
 ## 8. Changelog
+
+### v0.2.1 — 2026-06-17
+Il firmware del **sensore ruota Crr** entra nel contratto come componente gestito:
+- Nuovo confine **G** (`firmware ↔ wheel`, BLE `0xBB00`) con la spec lato sensore
+  (STREAM/RESULT/CMD/CONFIG).
+- Il firmware vive in **`wheel-fw/`** nella repo madre (separato dal build
+  ESP-IDF; toolchain nRF Connect SDK/Zephyr). Skeleton iniziale `0.1.0`.
 
 ### v0.2.0 — 2026-06-17
 Nuovo modello pairing & sensori (cambiamento comportamentale → MINOR). Decisioni
