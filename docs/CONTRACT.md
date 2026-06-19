@@ -1,7 +1,7 @@
 # AeroDrag — Interface Contract
 
 ```
-contract: v0.1.3
+contract: v0.1.4
 owner:    aerodrag-firmware (questa repo è la fonte di verità unica)
 status:   ratified
 date:     2026-06-16
@@ -84,6 +84,18 @@ MTU richiesto ≥ 53 (si negozia 185): PHYSICS=28 B, READ IDENTITY=50 B.
 - Tutti i campi 0 se la misura non è valida (`cda>0.01 && vAirMs>0.5` lato app).
 - Il **CdA del firmware è la verità**. `engine.ts` nell'app resta solo per
   *sim mode* / firmware legacy e DEVE replicare le formule di §6.
+
+### Identità & pairing `IDENTITY` (0xaa05) — (v0.1.4)
+- Il `device_id` esposto in READ su `0xaa05` (MAC `"AA:BB:CC:DD:EE:FF"`) è
+  l'**identità canonica** del device e l'**unica** sorgente del campo `device`
+  dei frame telemetria (§3). Il consumer (app) **DEVE leggerlo alla connessione**
+  e usarlo come `device`; coincide con quello che il firmware usa in WiFi diretto.
+- **Disaccoppiare identità e trasporto BLE**: l'identificatore di connessione BLE
+  è platform-specific (su iOS è un UUID CoreBluetooth, **non** il MAC), quindi
+  **NON** va usato come identità coach né confrontato col MAC. Il filtro/whitelist
+  di connessione usa l'id BLE nativo (`device.id`); l'identità arriva da `0xaa05`.
+- Il QR (`AERODRAG://PAIR/<MAC>`) è una **whitelist opzionale**, non la fonte
+  dell'identità runtime: l'identità autorevole è sempre quella letta da `0xaa05`.
 
 ---
 
@@ -258,6 +270,17 @@ Costanti: `g = 9.80665`, `RHO_STD = 1.225`, CdA valido in `[0.10, 0.60]` (device
 ---
 
 ## 8. Changelog
+
+### v0.1.4 — 2026-06-17
+Audit pairing. Chiarimento §2, nessuna rottura di wire:
+- **IDENTITY 0xaa05** è l'identità canonica: l'app DEVE leggere il `device_id`
+  (MAC) alla connessione e usarlo come `device` dei frame (§3). Risolve l'uso
+  errato dell'id BLE come identità.
+- **Disaccoppiamento identità/trasporto BLE**: l'id di connessione BLE è
+  platform-specific (UUID su iOS) → usato solo come filtro di connessione, mai
+  come identità né confrontato col MAC. Corregge il bug iOS (device QR-MAC mai
+  uguale all'UUID iOS → nessuna connessione) e il caso `device:'unknown'`.
+- QR = whitelist opzionale, non fonte dell'identità runtime.
 
 ### v0.1.3 — 2026-06-17
 Audit dataflow cross-repo. Chiarimento + fix, nessuna rottura di wire:
