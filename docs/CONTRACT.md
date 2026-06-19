@@ -323,7 +323,7 @@ Costanti: `g = 9.80665`, `RHO_STD = 1.225`, CdA valido in `[0.10, 0.60]` (device
 | coach (Electron) | 1.0.0 |
 | coach pc-receiver | 1.0.0 |
 | new (app) | 1.0.0 (Expo ~56) |
-| wheel-fw (sensore ruota Crr) | 0.1.0 (skeleton) |
+| wheel-fw (sensore ruota Crr) | 0.2.0 (IMU+stream, da buildare) |
 
 ---
 

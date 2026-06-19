@@ -34,11 +34,27 @@ del sensore) resta esposto ma **non è usato** nel flusso v0.2.0.
 Governance: nessuna modifica al servizio `0xBB00` in autonomia — si propone nella
 seam `firmware↔wheel`, si concorda, poi il capofila ratifica nel contratto.
 
+## Modello fisico (assunzioni HW — da validare)
+
+Sensore montato sul **mozzo**: l'asse di rotazione ruota = asse **Z** del giroscopio.
+- `omega = |gyro_z|` [rad/s] → `speedMs = omega · tireCircM/(2π)`
+- `accelMs2 = d(speedMs)/dt` (low-pass) — decelerazione coast-down
+- `vibRMS` = RMS della componente AC del modulo accelerometrico (rugosità)
+- `tempC` = temperatura die IMU
+
+Se l'asse di spin non è Z, cambiare `GYRO_SPIN_CHAN` in `src/main.c`. I segni e
+le costanti di montaggio vanno verificati sul prototipo.
+
 ## Stato
 
-⚠️ **Skeleton** — definisce il servizio GATT e l'ossatura dell'app Zephyr; la
-driver ICM-42688 e l'algoritmo coast-down sono `TODO`. Da completare e buildare
-con nRF Connect SDK prima del flash.
+🟡 **Oltre lo skeleton** — implementati: servizio GATT `0xBB00`, integrazione IMU
+ICM-42688 via Zephyr Sensor API, calcolo `speedMs/accelMs2/tempC/vibRMS`, stream
+NOTIFY a 10 Hz (sampling 100 Hz), handler `CMD`/`CONFIG`, advertising, overlay
+devicetree SPI (`app.overlay`, da adattare alla board).
+
+⚠️ **Non ancora compilato/flashato** (manca toolchain nRF Connect SDK in questo
+ambiente) e il **modello di montaggio è un'assunzione**: serve bring-up + taratura
+su hardware reale. `RESULT 0xBB02` resta legacy (il Crr lo calcola l'app).
 
 ## Build (nRF Connect SDK)
 
