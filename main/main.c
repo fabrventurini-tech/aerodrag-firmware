@@ -533,11 +533,6 @@ void app_main(void)
     ret = display_init();
     if (ret != ESP_OK)
         ESP_LOGW(TAG, "Display init failed: %d", ret);
-    else {
-        display_selftest();   /* BRING-UP: schermo ROSSO ~2 s per isolare HW/UI */
-        ESP_LOGI(TAG, "Display self-test: schermo ROSSO ~2s (se resta nero -> backlight/HW)");
-        vTaskDelay(pdMS_TO_TICKS(2000));
-    }
     display_set_pairing_id(g_identity.device_id);
 
     g_sensors_mutex = xSemaphoreCreateMutex();
