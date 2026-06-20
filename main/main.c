@@ -420,10 +420,15 @@ static volatile bool    g_btn_long_press      = false;
 static volatile bool    g_btn_very_long_press = false;
 static volatile int64_t g_btn_last_tap_us     = 0;
 static volatile bool    g_btn_double_click    = false;
+static volatile int64_t g_btn_last_edge_us    = 0;
 
 static void IRAM_ATTR btn_isr(void *arg)
 {
     int64_t now = esp_timer_get_time();
+    /* Debounce temporale: ignora edge a <20 ms dall'ultimo edge per evitare
+     * doppi g_screen_next / falsi long-press da rimbalzo meccanico. */
+    if (g_btn_last_edge_us > 0 && (now - g_btn_last_edge_us) < 20000LL) return;
+    g_btn_last_edge_us = now;
     if (gpio_get_level(PIN_BTN_USER) == 0) {
         g_btn_press_us = now;
     } else {

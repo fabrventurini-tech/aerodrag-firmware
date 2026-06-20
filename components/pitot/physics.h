@@ -48,7 +48,7 @@ static inline aerodrag_physics_t physics_compute(
 
     // Air density correction
     float rho = physics_calc_rho(s->temp_c, s->humidity_pct, s->altitude_m);
-    if (rho < 0.8f || rho > 1.5f) rho = RHO_STD;  // sanity clamp (coerente con physics_calc_rho)
+    if (rho < 0.8f || rho > 1.5f) rho = RHO_STD;  // sanity clamp (allineato a physics_calc_rho)
 
     // Pitot: v_air = sqrt(2 * ΔP / ρ)
     float dp = s->pitot_pa;

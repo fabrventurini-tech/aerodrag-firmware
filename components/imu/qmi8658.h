@@ -107,20 +107,20 @@ esp_err_t qmi8658_read(qmi8658_t *dev)
     int16_t ax_raw = (int16_t)((buf[1] << 8) | buf[0]);
     int16_t ay_raw = (int16_t)((buf[3] << 8) | buf[2]);
     int16_t az_raw = (int16_t)((buf[5] << 8) | buf[4]);
-    int16_t gx_raw = (int16_t)((buf[7]  << 8) | buf[6]);
-    int16_t gy_raw = (int16_t)((buf[9]  << 8) | buf[8]);
+    int16_t gx_raw = (int16_t)((buf[7] << 8) | buf[6]);
+    int16_t gy_raw = (int16_t)((buf[9] << 8) | buf[8]);
     int16_t gz_raw = (int16_t)((buf[11] << 8) | buf[10]);
 
     float ax = ax_raw * QMI8658_ACC_SCALE;
     float ay = ay_raw * QMI8658_ACC_SCALE;
     float az = az_raw * QMI8658_ACC_SCALE;
-    float gx = gx_raw * QMI8658_GYR_SCALE;   // dps, rotazione attorno a X (roll)
-    float gy = gy_raw * QMI8658_GYR_SCALE;   // dps, rotazione attorno a Y (pitch)
-    float gz = gz_raw * QMI8658_GYR_SCALE;   // dps, rotazione attorno a Z (yaw)
+    float gx = gx_raw * QMI8658_GYR_SCALE;
+    float gy = gy_raw * QMI8658_GYR_SCALE;
+    float gz = gz_raw * QMI8658_GYR_SCALE;
 
     // Accelerometer pitch/roll (degrees)
-    float pitch_acc = atan2f(ax, sqrtf(ay*ay + az*az)) * (180.0f / 3.14159f);
-    float roll_acc  = atan2f(ay, sqrtf(ax*ax + az*az)) * (180.0f / 3.14159f);
+    float pitch_acc = atan2f(ax, sqrtf(ay*ay + az*az)) * (180.0f / 3.14159265f);
+    float roll_acc  = atan2f(ay, sqrtf(ax*ax + az*az)) * (180.0f / 3.14159265f);
 
     // Delta time
     int64_t now_us = esp_timer_get_time();
@@ -130,15 +130,16 @@ esp_err_t qmi8658_read(qmi8658_t *dev)
     dev->last_us = now_us;
     if (dt > 0.1f) dt = 0.008f;  // clamp on first call / gap
 
-    // Complementary filter. La quota giroscopica del pitch è la rotazione
-    // attorno a Y (gy), quella del roll attorno a X (gx): l'accoppiamento
-    // dev'essere coerente con gli angoli accelerometrici sopra. (Il segno va
-    // confermato sull'orientamento reale del sensore.)
+    // Complementary filter.
+    // NB: il pitch (accel atan2f(ax,...)) si integra col gyro Y; il roll
+    // (atan2f(ay,...)) col gyro X. Il SEGNO di gx/gy/gz va confermato
+    // sull'hardware (orientamento montaggio IMU sulla scheda).
     dev->pitch_deg = CF_ALPHA * (dev->pitch_deg + gy * dt)
                    + (1.0f - CF_ALPHA) * pitch_acc;
     dev->roll_deg  = CF_ALPHA * (dev->roll_deg  + gx * dt)
                    + (1.0f - CF_ALPHA) * roll_acc;
-    // Yaw: solo integrazione del gyro Z (nessun riferimento assoluto → drift).
+    // Yaw: nessun riferimento assoluto (no magnetometro) → pura integrazione
+    // del gyro Z; deriverà nel tempo. Segno da confermare sull'hardware.
     dev->yaw_deg += gz * dt;
 
     // Temperature

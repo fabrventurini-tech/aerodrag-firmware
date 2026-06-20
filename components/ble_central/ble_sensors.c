@@ -507,7 +507,7 @@ static void start_scan(void);
 static esp_timer_handle_t s_scan_restart_timer = NULL;
 static volatile bool      s_scan_enabled = true;
 static volatile bool      s_nimble_synced = false;  /* true dopo on_sync */
-static volatile bool      s_discovery = false;      /* discovery 0xaa0e in corso (usata da start_scan) */
+static volatile bool      s_discovery = false;       /* discovery 0xaa0e attiva */
 static void _scan_restart_cb(void *arg) { start_scan(); }
 
 /* Riavvia il scan dopo 2 s — lascia tempo a WiFi tra una sessione e l'altra */
@@ -552,7 +552,6 @@ static void start_scan(void) {
 /*  DISCOVERY (0xaa0e) — scopre i sensori e ne riporta i MAC all'app            */
 /* ─────────────────────────────────────────────────────────────────────────── */
 
-/* s_discovery è dichiarata sopra (serve a start_scan, definita prima) */
 static ble_addr_t         s_seen[20];
 static uint8_t            s_seen_n = 0;
 static esp_timer_handle_t s_disc_timer = NULL;
@@ -630,7 +629,7 @@ static int central_gap_event(struct ble_gap_event *event, void *arg) {
                 s_seen[s_seen_n++] = disc->addr;
             uint8_t mac_be[6];
             for (int b = 0; b < 6; b++) mac_be[b] = disc->addr.val[5 - b];
-            char name[20];
+            char name[22];
             uint8_t nl = adv_find_name(disc->data, disc->length_data, name, sizeof(name));
             ble_notify_sensor_scan(t, mac_be, disc->rssi, name, nl);
             break;  /* in discovery non ci si connette */

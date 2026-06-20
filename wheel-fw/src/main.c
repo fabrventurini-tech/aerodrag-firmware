@@ -174,11 +174,18 @@ static void process_sample(void)
 	}
 	float radius = g_cfg.tire_circ_m / (2.0f * PI_F);
 	float speed = omega * radius;
-	if (speed < 0.05f) speed = 0.0f;
+	bool speed_valid = (speed >= 0.05f);   /* omega significativo? */
+	if (!speed_valid) speed = 0.0f;
 
-	/* Accelerazione (decelerazione) longitudinale = d(speed)/dt, low-pass */
-	float a = (speed - g_speed_ms) / DT_S;
-	g_accel_lp += ACCEL_LP_ALPHA * (a - g_accel_lp);
+	/* Accelerazione (decelerazione) longitudinale = d(speed)/dt, low-pass.
+	 * A fermo (speed azzerato bruscamente <0.05) il delta produrrebbe grandi
+	 * salti spuri: aggiorna l'accel SOLO quando omega è significativo. */
+	if (speed_valid) {
+		float a = (speed - g_speed_ms) / DT_S;
+		g_accel_lp += ACCEL_LP_ALPHA * (a - g_accel_lp);
+	} else {
+		g_accel_lp = 0.0f;
+	}
 	g_speed_ms = speed;
 
 	/* Vibrazione: deviazione del modulo accelerometrico dalla media mobile */
@@ -201,13 +208,12 @@ static void process_sample(void)
 	if (++g_div >= STREAM_DIV) {
 		g_div = 0;
 		float vib_rms = (g_vib_n > 0) ? sqrtf(g_vib_acc / (float)g_vib_n) : 0.0f;
+		/* Gli accumulatori vibrazione vanno azzerati ogni ciclo STREAM_DIV,
+		 * indipendentemente dal fatto che si notifichi o meno. */
 		g_vib_acc = 0.0f;
 		g_vib_n   = 0;
 
-		/* Lo stream grezzo serve solo durante un coast-down attivo
-		 * (relay per la calibrazione Crr): fuori da un run non si trasmette,
-		 * per non sprecare radio/batteria. Gli accumulatori vib sono già stati
-		 * azzerati sopra ad ogni ciclo STREAM_DIV. */
+		/* La notify STREAM avviene SOLO durante un coast-down attivo. */
 		if (g_stream_subscribed && g_mode != COAST_IDLE) {
 			float frame[4] = { g_speed_ms, g_accel_lp, g_temp_c, vib_rms };
 			bt_gatt_notify(NULL, ATTR_STREAM, frame, sizeof(frame));

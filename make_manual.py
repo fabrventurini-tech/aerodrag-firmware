@@ -100,7 +100,7 @@ def on_page(canvas, doc):
     canvas.setFillColor(TEAL)
     canvas.drawString(15*mm, H - 11*mm, "AeroDrag Firmware")
     canvas.setFillColor(MUTED)
-    canvas.drawRightString(W - 15*mm, H - 11*mm, "Manuale Utente  •  v1.0")
+    canvas.drawRightString(W - 15*mm, H - 11*mm, "Manuale Utente  -  v1.0")
 
     # Bottom bar
     canvas.setFillColor(BG)
@@ -132,7 +132,7 @@ def build():
     story += [SP(20),
               P("AeroDrag", "title"),
               P("Manuale Utente del Firmware", "subtitle"),
-              P("Waveshare ESP32-S3-Touch-LCD-2.8  •  IDF v6.0", "subtitle"),
+              P("Waveshare ESP32-S3-Touch-LCD-2.8  -  IDF v5.3.2", "subtitle"),
               SP(6), hr(), SP(4)]
 
     story += [P("""
@@ -335,12 +335,12 @@ La <b>battery icon</b> in alto a destra nella schermata CdA mostra 4 barre
         ["Display CS",      "42",   "Chip Select"],
         ["Display RST",     "39",   "Hardware reset"],
         ["Display BL",      "5",    "Backlight PWM"],
-        ["Touch SDA",       "1",    "I2C0 (CST816S, condiviso IMU)"],
-        ["Touch SCL",       "3",    "I2C0"],
+        ["Touch SDA",       "1",    "Bus I2C dedicato (CST328, 0x1A)"],
+        ["Touch SCL",       "3",    "Bus touch GPIO1/3 (non usato dal fw)"],
         ["Touch INT",       "4",    "Interrupt"],
         ["Touch RST",       "2",    "Reset"],
-        ["IMU SDA",         "1",    "I2C0 (QMI8658C, condiviso touch)"],
-        ["IMU SCL",         "3",    "I2C0"],
+        ["IMU SDA",         "11",   "I2C0 (QMI8658C, 0x6B)"],
+        ["IMU SCL",         "10",   "I2C0"],
         ["IMU INT1",        "13",   "Interrupt 1"],
         ["IMU INT2",        "12",   "Interrupt 2"],
         ["Pitot SDA",       "15",   "I2C1 (SDP810-500Pa)"],
@@ -357,12 +357,12 @@ La <b>battery icon</b> in alto a destra nella schermata CdA mostra 4 barre
     specs = [
         ["Parametro",              "Valore"],
         ["MCU",                    "ESP32-S3 (dual-core Xtensa LX7, 240 MHz)"],
-        ["Framework",              "ESP-IDF v6.0.1"],
+        ["Framework",              "ESP-IDF v5.3.2"],
         ["Display",                "ST7789T3 240×320 SPI, 40 MHz"],
         ["Frequenza rendering",    "5 Hz"],
         ["Sensore pitot",          "SDP810-500Pa (I2C1, 0x25), 10 Hz"],
         ["IMU",                    "QMI8658C (I2C0, 0x6B), 10 Hz"],
-        ["Touch",                  "CST816S (I2C0, 0x15)"],
+        ["Touch",                  "CST328 (bus GPIO1/3, 0x1A) - non usato"],
         ["WiFi",                   "802.11 b/g/n 2.4 GHz"],
         ["BLE",                    "BLE 5.0 (server GATT + central)"],
         ["Flash",                  "Partizioni OTA dual-bank"],

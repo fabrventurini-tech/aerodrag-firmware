@@ -195,18 +195,19 @@ static void _ws_handler(void *arg, esp_event_base_t base,
 
 static void coach_handle_command(const char *data, int len)
 {
-    /* Buffer ampio abbastanza da contenere un comando OTA con URL (≤256). */
+    /* Buffer dimensionato per l'intero comando (URL OTA lunghi inclusi).
+     * len clampato a sizeof(buf)-1, terminazione NUL esplicita. */
     char buf[OTA_URL_MAXLEN + 128] = {0};
-    if (len <= 0) return;
-    size_t n = (len < (int)sizeof(buf) - 1) ? (size_t)len : sizeof(buf) - 1;
-    memcpy(buf, data, n);
-    buf[n] = '\0';
+    if (len < 0) return;
+    if (len > (int)sizeof(buf) - 1) len = (int)sizeof(buf) - 1;
+    memcpy(buf, data, (size_t)len);
+    buf[len] = '\0';
 
-    /* Accetta SOLO messaggi di comando ({"type":"cmd",...}). Evita che un nome
-     * atleta o un URL che contenga "start"/"lap"/"stop" scateni comandi spuri. */
-    if (!strstr(buf, "\"type\":\"cmd\"") && !strstr(buf, "\"type\": \"cmd\""))
-        return;
+    /* Accetta solo veri comandi: deve contenere "type":"cmd". Evita che un
+     * nome/URL contenente "start"/"lap"/"stop" scateni comandi spuri. */
+    if (!strstr(buf, "\"type\":\"cmd\"")) return;
 
+    /* Match ESATTO sull'action (niente sottostringhe generiche). */
     if (strstr(buf, "\"action\":\"lap\"")) {
         g_coach_lap_cmd = true;
         ESP_LOGI(COACH_TAG, "LAP dal coach");

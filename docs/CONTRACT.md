@@ -138,11 +138,19 @@ bici vicine; il firmware resta l'unica fonte di verità).
   dall'app e scritto in `CONFIG`. Né `crr` né `wheelCircM` transitano da
   `WHEEL_STREAM`: lì passano **solo** i dati grezzi.
 
+#### Ordine byte del MAC in `0xaa0b`/`0xaa0e` (seam firmware↔new) — (v0.2.3)
+In `SENSOR_WHITELIST` (0xaa0b) e nelle notifiche `SENSOR_SCAN` (0xaa0e) il campo
+`uint8 mac[6]` è in **ordine di visualizzazione** (display order): `mac[0]` = primo
+ottetto del MAC (la `AA` di `AA:BB:CC:DD:EE:FF`), `mac[5]` = ultimo ottetto (`FF`).
+NON è l'ordine little-endian dello stack BLE (`ble_addr_t.val`). Firmware e app
+DEVONO usare questo ordine; il firmware converte internamente verso `ble_addr_t`.
+
 #### Confine firmware ↔ wheel — servizio `0xBB00` (lato sensore, v0.2.1)
-Il firmware del sensore ruota Crr (Seeed **XIAO BLE Sense**, nRF52840 + IMU
-onboard **LSM6DS3TR-C**) è un **componente gestito** della repo madre: vive in
-[`wheel-fw/`](../wheel-fw/) (firmware separato, **non** parte del build ESP-IDF).
-Espone il servizio `0xBB00` che l'ESP32 (central) consuma:
+Il firmware del sensore ruota Crr (**Seeed XIAO BLE Sense (nRF52840) + IMU
+onboard LSM6DS3TR-C**) è un **componente
+gestito** della repo madre: vive in [`wheel-fw/`](../wheel-fw/) (firmware
+separato, **non** parte del build ESP-IDF). Espone il servizio `0xBB00` che
+l'ESP32 (central) consuma:
 
 | CHR | UUID | Flags | Bytes | Payload |
 |-----|------|-------|-------|---------|
@@ -330,14 +338,13 @@ Costanti: `g = 9.80665`, `RHO_STD = 1.225`, CdA valido in `[0.10, 0.60]` (device
 ## 8. Changelog
 
 ### v0.2.3 — 2026-06-20
-Chiarimenti documentali (PATCH, nessuna modifica al wire). Audit bug cross-repo:
-- **Sensore ruota** (confine G): hardware aggiornato a **Seeed XIAO BLE Sense**
-  con IMU onboard **LSM6DS3TR-C** (prima nRF52840 + ICM-42688). Il servizio
-  `0xBB00` resta invariato.
-- Ribaditi due vincoli già nel contratto, ora applicati nelle implementazioni:
-  (§3) il Pi **rifiuta all'ingestione** i frame senza `device` MAC valido — su
-  **qualunque** path (`/device` e `/coach`); (§5) il filename sessione ha il
-  suffisso `_{deviceIdHex}` **obbligatorio**, mai `unknown`.
+Chiarimenti (PATCH, nessuna modifica al wire) dall'audit bug cross-repo.
+- **Seam firmware↔new**: specificato l'ordine byte di `mac[6]` in `0xaa0b`/`0xaa0e`
+  (display order, `mac[0]`=primo ottetto). Risolve l'ambiguità "big-endian".
+- **Sensore ruota** (confine G): hardware → Seeed XIAO BLE Sense + LSM6DS3TR-C
+  (0xBB00 invariato).
+- Allineamenti firmware al contratto già esistente: `OTA_URL` ora ≤256 (era 200),
+  MTU preferito 185 (era 100). Nessun impatto sui consumatori.
 
 ### v0.2.2 — 2026-06-19
 Fix pairing sensori su iOS (seam `firmware↔new`). Su iOS l'app non conosce il
