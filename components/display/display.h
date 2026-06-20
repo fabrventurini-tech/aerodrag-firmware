@@ -1,5 +1,6 @@
 #pragma once
 #include "esp_err.h"
+#include "esp_log.h"
 #include "driver/spi_master.h"
 #include "driver/gpio.h"
 #include "driver/ledc.h"
@@ -67,16 +68,22 @@ static inline uint16_t swap16(uint16_t v) { return (v << 8) | (v >> 8); }
 static void lcd_cmd(uint8_t c)
 {
     gpio_set_level(PIN_LCD_DC, 0);
-    spi_transaction_t t = { .length = 8, .tx_buffer = &c };
-    spi_device_polling_transmit(g_spi, &t);
+    uint8_t cc = c;                       // DMA-capable (stack), non flash
+    spi_transaction_t t = { .length = 8, .tx_buffer = &cc };
+    esp_err_t r = spi_device_polling_transmit(g_spi, &t);
+    if (r != ESP_OK) ESP_LOGE("lcd", "cmd 0x%02X tx err: %s", c, esp_err_to_name(r));
 }
 
 static void lcd_data(const uint8_t *d, size_t len)
 {
     if (!len) return;
     gpio_set_level(PIN_LCD_DC, 1);
-    spi_transaction_t t = { .length = len * 8, .tx_buffer = d };
-    spi_device_polling_transmit(g_spi, &t);
+    uint8_t buf[24];                      // copia in RAM DMA-capable (i dati init sono in flash)
+    if (len > sizeof(buf)) len = sizeof(buf);
+    memcpy(buf, d, len);
+    spi_transaction_t t = { .length = len * 8, .tx_buffer = buf };
+    esp_err_t r = spi_device_polling_transmit(g_spi, &t);
+    if (r != ESP_OK) ESP_LOGE("lcd", "data(%d) tx err: %s", (int)len, esp_err_to_name(r));
 }
 
 static void lcd_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
@@ -154,6 +161,8 @@ esp_err_t display_init(void)
         if (ST7789_INIT[i].delay_ms)
             vTaskDelay(pdMS_TO_TICKS(ST7789_INIT[i].delay_ms));
     }
+    ESP_LOGI("lcd", "ST7789 init inviato (%d cmd) @ %d MHz",
+             (int)(sizeof(ST7789_INIT)/sizeof(ST7789_INIT[0])), LCD_SPI_CLK_HZ/1000000);
 
     bl_init();
     display_set_brightness(90);
@@ -185,7 +194,8 @@ static void display_flush(void)
             .length    = h * FB_W * 16,
             .tx_buffer = strip_buf,
         };
-        spi_device_polling_transmit(g_spi, &t);
+        esp_err_t r = spi_device_polling_transmit(g_spi, &t);
+        if (r != ESP_OK) { ESP_LOGE("lcd", "flush tx err: %s", esp_err_to_name(r)); return; }
     }
 }
 
