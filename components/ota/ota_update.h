@@ -24,7 +24,7 @@
 
 #define OTA_TAG         "ota"
 #define OTA_BUF_SIZE    4096
-#define OTA_URL_MAXLEN   200
+#define OTA_URL_MAXLEN   257   /* contratto: URL OTA <=256 byte + NUL */
 
 typedef enum {
     OTA_IDLE    = 0,

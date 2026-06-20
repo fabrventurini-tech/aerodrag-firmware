@@ -1,6 +1,8 @@
 # AeroDrag Pro — Firmware ESP32-S3
 
-Firmware ESP-IDF 5.2 per la board **Waveshare ESP32-S3-Touch-LCD-1.46**.
+Firmware ESP-IDF 5.2 per la board **Waveshare ESP32-S3-Touch-LCD-2.8**
+(display ST7789T3 240×320, IMU QMI8658C, touch CST328). Pin map autorevole in
+[`main/board_pins.h`](main/board_pins.h).
 
 ## Prerequisiti
 
@@ -29,11 +31,11 @@ idf.py -p /dev/ttyUSB0 flash monitor
 
 ## Schema di collegamento
 
-La Waveshare ESP32-S3-Touch-LCD-1.46 ha già integrati:
-- ✅ Display GC9D01N (SPI)
-- ✅ Touch CST816D (I2C0)
-- ✅ IMU QMI8658 (I2C0)
-- ✅ Batteria LiPo con gestione carica
+La Waveshare ESP32-S3-Touch-LCD-2.8 ha già integrati:
+- ✅ Display **ST7789T3** 240×320 (4-wire SPI: SCLK40/MOSI45/DC41/CS42/RST39/BL5)
+- ✅ Touch **CST328** (I2C dedicato GPIO1/3, 0x1A) — non usato dal firmware
+- ✅ IMU **QMI8658C** (I2C0 GPIO11/10, 0x6B)
+- ✅ Batteria LiPo con gestione carica (ADC GPIO8, partitore ×3)
 
 **Devi collegare esternamente:**
 
@@ -41,22 +43,16 @@ La Waveshare ESP32-S3-Touch-LCD-1.46 ha già integrati:
 ┌────────────────────────────────────────────────────────┐
 │ SENSORE              │ PIN BOARD   │ Note               │
 ├────────────────────────────────────────────────────────┤
-│ SDP810 SDA           │ GPIO 41     │ I2C1               │
-│ SDP810 SCL           │ GPIO 42     │ I2C1               │
+│ SDP810 SDA           │ GPIO 15     │ I2C1 (addr 0x25)   │
+│ SDP810 SCL           │ GPIO 18     │ I2C1 (100 kHz)     │
 │ SDP810 VCC           │ 3.3V        │                    │
 │ SDP810 GND           │ GND         │                    │
-├────────────────────────────────────────────────────────┤
-│ GPS u-blox TX        │ GPIO 44     │ UART1 RX           │
-│ GPS u-blox RX        │ GPIO 43     │ UART1 TX           │
-│ GPS VCC              │ 3.3V        │                    │
-│ GPS GND              │ GND         │                    │
-├────────────────────────────────────────────────────────┤
-│ ANT+ bridge TX       │ GPIO 18     │ UART2 RX (opt.)    │
-│ ANT+ bridge RX       │ GPIO 17     │ UART2 TX (opt.)    │
-├────────────────────────────────────────────────────────┤
-│ Pulsante calibr.     │ GPIO 1      │ pull-up interno    │
 └────────────────────────────────────────────────────────┘
 ```
+
+La velocità a terra arriva dai **sensori esterni BLE** (CSC / sensore ruota)
+gestiti dal central del firmware (`components/ble_central`), non da un GPS
+dedicato. Il pulsante di calibrazione / cambio schermata è il **BOOT (GPIO0)**.
 
 ## Architettura task FreeRTOS
 
@@ -72,7 +68,7 @@ Core 1 (PRO_CPU):
   nimble_host_task [NimBLE]        — stack BLE (lanciato da ble_server_init)
 ```
 
-## Uso del pulsante fisico (GPIO 1)
+## Uso del pulsante fisico (BOOT, GPIO 0)
 
 | Pressione | Azione |
 |---|---|
@@ -106,7 +102,7 @@ aerodrag-firmware/
 ├── partitions.csv              # 16MB: factory 4MB + sessions 8MB
 ├── main/
 │   ├── CMakeLists.txt
-│   ├── board_pins.h            # Pin map Waveshare 1.46
+│   ├── board_pins.h            # Pin map Waveshare Touch-LCD-2.8
 │   ├── aerodrag_types.h        # Tipi condivisi tra componenti
 │   └── main.c                  # Entry point, task launcher
 └── components/
@@ -115,19 +111,23 @@ aerodrag-firmware/
     │   └── physics.h           # Motore fisico CdA in C
     ├── imu/
     │   └── qmi8658.h           # Driver QMI8658 + filtro complementare
-    ├── gps/
-    │   └── gps_nmea.h          # Parser NMEA + configurazione u-blox
     ├── ble/
-    │   └── ble_server.h        # Server GATT NimBLE con 4 caratteristiche
+    │   └── ble_server.h        # Server GATT NimBLE (servizio 0xAA00)
+    ├── ble_central/
+    │   └── ble_sensors.c       # Central: sensori esterni BLE + sensore ruota 0xBB00
+    ├── wifi/
+    │   └── wifi_coach.h        # Client WiFi/WebSocket verso il Pi (/device)
+    ├── ota/
+    │   └── ota_update.h        # OTA via URL (.bin)
     ├── display/
-    │   └── display.h           # Driver GC9D01N + renderer UI
+    │   └── display.h           # Driver ST7789T3 + renderer UI
     └── battery/
         └── battery.h           # ADC batteria + NVS calibrazione
 ```
 
 ## UUID BLE (devono coincidere con l'app React Native)
 
-Contratto: **v0.2.0** — sorgente di verità in [`docs/CONTRACT.md`](docs/CONTRACT.md).
+Contratto: **v0.2.3** — sorgente di verità in [`docs/CONTRACT.md`](docs/CONTRACT.md).
 
 | UUID | Flags | Dati | Frequenza |
 |---|---|---|---|
@@ -144,20 +144,21 @@ Contratto: **v0.2.0** — sorgente di verità in [`docs/CONTRACT.md`](docs/CONTR
 | `0000aa0b-...-aa00` | R+W | sensor whitelist: count + N×(type + mac[6]) | on-pair |
 | `0000aa0c-...-aa00` | N | float32[4]: speedMs, accelMs2, tempC, vibRMS (relay ruota Crr) | 10 Hz |
 | `0000aa0d-...-aa00` | W | uint8: comando coast-down → sensore ruota | on-demand |
+| `0000aa0e-...-aa00` | W+N | discovery sensori: W 0x01/0x00; N type+mac[6]+rssi+nameLen+name | on-pair |
 
 ## Troubleshooting
 
 **SDP810 non trovato (I2C error)**
-→ Verifica cablaggio GPIO 41/42. L'indirizzo default è 0x25. Con ADDR pin a GND diventa 0x25, a VDD diventa 0x26 — modifica `PITOT_I2C_ADDR` in `board_pins.h`.
+→ Verifica cablaggio GPIO 15/18 (I2C1). L'indirizzo default è 0x25 — modifica `PITOT_I2C_ADDR` in `board_pins.h` se necessario.
 
 **QMI8658 non trovato**
 → Sulla Waveshare il pin AD0 è collegato a VDD quindi l'indirizzo è 0x6B. Alcune revisioni usano 0x6A — prova entrambi.
 
 **Display bianco o nero**
-→ Verifica il reset hardware (GPIO 14). Il GC9D01N richiede reset >10ms.
+→ Verifica il reset hardware (GPIO 39). Il ST7789T3 richiede reset >10ms.
 
 **BLE non visibile sul telefono**
 → Controlla nei log che NimBLE sia partito (`sync_cb` chiamato). Il device si chiama `"AeroDrag Pro"`.
 
 **Batteria sempre 0%**
-→ ADC1_CH3 è GPIO 4. Se non è collegato la lettura è 0. Con batteria LiPo collegata al connettore MX1.25 funziona automaticamente.
+→ ADC1_CH7 è GPIO 8 (partitore ×3). Se non è collegato la lettura è 0. Con batteria LiPo collegata al connettore MX1.25 funziona automaticamente.

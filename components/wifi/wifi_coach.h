@@ -195,20 +195,29 @@ static void _ws_handler(void *arg, esp_event_base_t base,
 
 static void coach_handle_command(const char *data, int len)
 {
-    char buf[128] = {0};
-    memcpy(buf, data, len < 127 ? len : 127);
+    /* Buffer ampio abbastanza da contenere un comando OTA con URL (≤256). */
+    char buf[OTA_URL_MAXLEN + 128] = {0};
+    if (len <= 0) return;
+    size_t n = (len < (int)sizeof(buf) - 1) ? (size_t)len : sizeof(buf) - 1;
+    memcpy(buf, data, n);
+    buf[n] = '\0';
 
-    if (strstr(buf, "\"lap\"")) {
+    /* Accetta SOLO messaggi di comando ({"type":"cmd",...}). Evita che un nome
+     * atleta o un URL che contenga "start"/"lap"/"stop" scateni comandi spuri. */
+    if (!strstr(buf, "\"type\":\"cmd\"") && !strstr(buf, "\"type\": \"cmd\""))
+        return;
+
+    if (strstr(buf, "\"action\":\"lap\"")) {
         g_coach_lap_cmd = true;
         ESP_LOGI(COACH_TAG, "LAP dal coach");
-    } else if (strstr(buf, "\"start\"")) {
+    } else if (strstr(buf, "\"action\":\"start\"")) {
         g_coach_start_cmd = true;
         ESP_LOGI(COACH_TAG, "START dal coach");
-    } else if (strstr(buf, "\"stop\"")) {
+    } else if (strstr(buf, "\"action\":\"stop\"")) {
         g_coach_stop_cmd = true;
         ESP_LOGI(COACH_TAG, "STOP dal coach");
-    } else if (strstr(buf, "\"ota\"")) {
-        // Formato: {"type":"cmd","action":"ota","url":"http://..."}  
+    } else if (strstr(buf, "\"action\":\"ota\"")) {
+        // Formato: {"type":"cmd","action":"ota","url":"http://..."}
         const char *p = strstr(buf, "\"url\":\"");
         if (p) {
             p += 7;

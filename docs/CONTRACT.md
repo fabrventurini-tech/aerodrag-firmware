@@ -1,10 +1,10 @@
 # AeroDrag — Interface Contract
 
 ```
-contract: v0.2.2
+contract: v0.2.3
 owner:    aerodrag-firmware (questa repo è la fonte di verità unica)
 status:   ratified
-date:     2026-06-16
+date:     2026-06-20
 ```
 
 Questo documento è l'**unica fonte di verità** per le interfacce fra i quattro
@@ -139,10 +139,10 @@ bici vicine; il firmware resta l'unica fonte di verità).
   `WHEEL_STREAM`: lì passano **solo** i dati grezzi.
 
 #### Confine firmware ↔ wheel — servizio `0xBB00` (lato sensore, v0.2.1)
-Il firmware del sensore ruota Crr (nRF52840 + ICM-42688) è un **componente
-gestito** della repo madre: vive in [`wheel-fw/`](../wheel-fw/) (firmware
-separato, **non** parte del build ESP-IDF). Espone il servizio `0xBB00` che
-l'ESP32 (central) consuma:
+Il firmware del sensore ruota Crr (Seeed **XIAO BLE Sense**, nRF52840 + IMU
+onboard **LSM6DS3TR-C**) è un **componente gestito** della repo madre: vive in
+[`wheel-fw/`](../wheel-fw/) (firmware separato, **non** parte del build ESP-IDF).
+Espone il servizio `0xBB00` che l'ESP32 (central) consuma:
 
 | CHR | UUID | Flags | Bytes | Payload |
 |-----|------|-------|-------|---------|
@@ -323,11 +323,21 @@ Costanti: `g = 9.80665`, `RHO_STD = 1.225`, CdA valido in `[0.10, 0.60]` (device
 | coach (Electron) | 1.0.0 |
 | coach pc-receiver | 1.0.0 |
 | new (app) | 1.0.0 (Expo ~56) |
-| wheel-fw (sensore ruota Crr) | 0.2.0 (IMU+stream, da buildare) |
+| wheel-fw (sensore ruota Crr) | 0.2.1 (XIAO BLE Sense + LSM6DS3TR-C, da buildare) |
 
 ---
 
 ## 8. Changelog
+
+### v0.2.3 — 2026-06-20
+Chiarimenti documentali (PATCH, nessuna modifica al wire). Audit bug cross-repo:
+- **Sensore ruota** (confine G): hardware aggiornato a **Seeed XIAO BLE Sense**
+  con IMU onboard **LSM6DS3TR-C** (prima nRF52840 + ICM-42688). Il servizio
+  `0xBB00` resta invariato.
+- Ribaditi due vincoli già nel contratto, ora applicati nelle implementazioni:
+  (§3) il Pi **rifiuta all'ingestione** i frame senza `device` MAC valido — su
+  **qualunque** path (`/device` e `/coach`); (§5) il filename sessione ha il
+  suffisso `_{deviceIdHex}` **obbligatorio**, mai `unknown`.
 
 ### v0.2.2 — 2026-06-19
 Fix pairing sensori su iOS (seam `firmware↔new`). Su iOS l'app non conosce il

@@ -507,6 +507,7 @@ static void start_scan(void);
 static esp_timer_handle_t s_scan_restart_timer = NULL;
 static volatile bool      s_scan_enabled = true;
 static volatile bool      s_nimble_synced = false;  /* true dopo on_sync */
+static volatile bool      s_discovery = false;      /* discovery 0xaa0e in corso (usata da start_scan) */
 static void _scan_restart_cb(void *arg) { start_scan(); }
 
 /* Riavvia il scan dopo 2 s — lascia tempo a WiFi tra una sessione e l'altra */
@@ -551,7 +552,7 @@ static void start_scan(void) {
 /*  DISCOVERY (0xaa0e) — scopre i sensori e ne riporta i MAC all'app            */
 /* ─────────────────────────────────────────────────────────────────────────── */
 
-static volatile bool      s_discovery = false;
+/* s_discovery è dichiarata sopra (serve a start_scan, definita prima) */
 static ble_addr_t         s_seen[20];
 static uint8_t            s_seen_n = 0;
 static esp_timer_handle_t s_disc_timer = NULL;

@@ -204,8 +204,12 @@ static void process_sample(void)
 		g_vib_acc = 0.0f;
 		g_vib_n   = 0;
 
-		float frame[4] = { g_speed_ms, g_accel_lp, g_temp_c, vib_rms };
-		if (g_stream_subscribed) {
+		/* Lo stream grezzo serve solo durante un coast-down attivo
+		 * (relay per la calibrazione Crr): fuori da un run non si trasmette,
+		 * per non sprecare radio/batteria. Gli accumulatori vib sono già stati
+		 * azzerati sopra ad ogni ciclo STREAM_DIV. */
+		if (g_stream_subscribed && g_mode != COAST_IDLE) {
+			float frame[4] = { g_speed_ms, g_accel_lp, g_temp_c, vib_rms };
 			bt_gatt_notify(NULL, ATTR_STREAM, frame, sizeof(frame));
 		}
 	}

@@ -55,6 +55,7 @@ esp_err_t qmi8658_init(qmi8658_t *dev, i2c_port_t port, uint8_t addr)
     dev->port  = port;
     dev->pitch_deg = 0.0f;
     dev->roll_deg  = 0.0f;
+    dev->yaw_deg   = 0.0f;
     dev->last_us   = 0;
 
     /* WHO_AM_I (atteso 0x05). Il QMI8658 risponde a 0x6A o 0x6B a seconda
@@ -106,14 +107,16 @@ esp_err_t qmi8658_read(qmi8658_t *dev)
     int16_t ax_raw = (int16_t)((buf[1] << 8) | buf[0]);
     int16_t ay_raw = (int16_t)((buf[3] << 8) | buf[2]);
     int16_t az_raw = (int16_t)((buf[5] << 8) | buf[4]);
-    int16_t gx_raw = (int16_t)((buf[7] << 8) | buf[6]);
-    int16_t gy_raw = (int16_t)((buf[9] << 8) | buf[8]);
+    int16_t gx_raw = (int16_t)((buf[7]  << 8) | buf[6]);
+    int16_t gy_raw = (int16_t)((buf[9]  << 8) | buf[8]);
+    int16_t gz_raw = (int16_t)((buf[11] << 8) | buf[10]);
 
     float ax = ax_raw * QMI8658_ACC_SCALE;
     float ay = ay_raw * QMI8658_ACC_SCALE;
     float az = az_raw * QMI8658_ACC_SCALE;
-    float gx = gx_raw * QMI8658_GYR_SCALE;
-    float gy = gy_raw * QMI8658_GYR_SCALE;
+    float gx = gx_raw * QMI8658_GYR_SCALE;   // dps, rotazione attorno a X (roll)
+    float gy = gy_raw * QMI8658_GYR_SCALE;   // dps, rotazione attorno a Y (pitch)
+    float gz = gz_raw * QMI8658_GYR_SCALE;   // dps, rotazione attorno a Z (yaw)
 
     // Accelerometer pitch/roll (degrees)
     float pitch_acc = atan2f(ax, sqrtf(ay*ay + az*az)) * (180.0f / 3.14159f);
@@ -127,11 +130,16 @@ esp_err_t qmi8658_read(qmi8658_t *dev)
     dev->last_us = now_us;
     if (dt > 0.1f) dt = 0.008f;  // clamp on first call / gap
 
-    // Complementary filter
-    dev->pitch_deg = CF_ALPHA * (dev->pitch_deg + gx * dt)
+    // Complementary filter. La quota giroscopica del pitch è la rotazione
+    // attorno a Y (gy), quella del roll attorno a X (gx): l'accoppiamento
+    // dev'essere coerente con gli angoli accelerometrici sopra. (Il segno va
+    // confermato sull'orientamento reale del sensore.)
+    dev->pitch_deg = CF_ALPHA * (dev->pitch_deg + gy * dt)
                    + (1.0f - CF_ALPHA) * pitch_acc;
-    dev->roll_deg  = CF_ALPHA * (dev->roll_deg  + gy * dt)
+    dev->roll_deg  = CF_ALPHA * (dev->roll_deg  + gx * dt)
                    + (1.0f - CF_ALPHA) * roll_acc;
+    // Yaw: solo integrazione del gyro Z (nessun riferimento assoluto → drift).
+    dev->yaw_deg += gz * dt;
 
     // Temperature
     uint8_t tbuf[2];
