@@ -13,7 +13,7 @@
 #define LCD_W           240    // portrait width
 #define LCD_H           320    // portrait height
 #define LCD_SPI_HOST    SPI2_HOST
-#define LCD_SPI_CLK_HZ  (40 * 1000 * 1000)   // ST7789T3 max 40MHz
+#define LCD_SPI_CLK_HZ  (10 * 1000 * 1000)   // BRING-UP: 10MHz conservativo (era 40)
 
 // ── Touch (CST328, bus I2C fisico dedicato su GPIO1/3) ───────────────────────
 // NON usato dal firmware. NOTA: l'ESP32-S3 ha solo 2 controller I2C, entrambi
