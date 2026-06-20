@@ -32,4 +32,5 @@ idf_component_register(
         esp_driver_uart
         esp_driver_spi
         esp_driver_ledc
+        esp_lcd
 )

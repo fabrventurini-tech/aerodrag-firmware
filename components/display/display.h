@@ -2,6 +2,10 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "driver/spi_master.h"
+#include "esp_lcd_panel_io.h"
+#include "esp_lcd_panel_vendor.h"
+#include "esp_lcd_panel_ops.h"
+#include "freertos/semphr.h"
 #include "driver/gpio.h"
 #include "driver/ledc.h"
 #include "esp_rom_gpio.h"
@@ -15,39 +19,19 @@
 #include <math.h>
 #include <string.h>
 
-// ─── ST7789T3 init sequence (Waveshare ESP32-S3-Touch-LCD-2.8) ───────────────
-typedef struct { uint8_t cmd; uint8_t data[16]; uint8_t len; uint8_t delay_ms; } lcd_cmd_t;
-
-static const lcd_cmd_t ST7789_INIT[] = {
-    { 0x01, {0}, 0, 150 },   // software reset
-    { 0x11, {0}, 0, 120 },   // sleep out
-    { 0x3A, {0x55}, 1, 10 }, // pixel format RGB565
-    { 0x36, {0x00}, 1, 0  }, // MADCTL: portrait 240x320
-    { 0x2A, {0x00,0x00,0x00,0xEF}, 4, 0 }, // column address 0-239
-    { 0x2B, {0x00,0x00,0x01,0x3F}, 4, 0 }, // row address 0-319
-    { 0xB2, {0x0C,0x0C,0x00,0x33,0x33}, 5, 0 }, // porch control
-    { 0xB7, {0x35}, 1, 0  }, // gate control
-    { 0xBB, {0x19}, 1, 0  }, // VCOMS
-    { 0xC0, {0x2C}, 1, 0  }, // LCM control
-    { 0xC2, {0x01}, 1, 0  }, // VDV/VRH enable
-    { 0xC3, {0x12}, 1, 0  }, // VRH set
-    { 0xC4, {0x20}, 1, 0  }, // VDV set
-    { 0xC6, {0x0F}, 1, 0  }, // FR control
-    { 0xD0, {0xA4,0xA1}, 2, 0 }, // power control 1
-    { 0xE0, {0xD0,0x04,0x0D,0x11,0x13,0x2B,0x3F,0x54,0x4C,0x18,0x0D,0x0B,0x1F,0x23}, 14, 0 },
-    { 0xE1, {0xD0,0x04,0x0C,0x11,0x13,0x2C,0x3F,0x44,0x51,0x2F,0x1F,0x1F,0x20,0x23}, 14, 0 },
-    { 0x21, {0}, 0, 0  },   // display inversion on
-    { 0x29, {0}, 0, 10 },   // display on
-};
+// L'init ST7789 è gestito dal driver ufficiale esp_lcd (esp_lcd_new_panel_st7789).
 
 // ─── Framebuffer — 240×320 × 2 bytes = 153.6 KB ──────────────────────────────
 #define FB_W  240
 #define FB_H  320
 #define FB_BYTES (FB_W * FB_H * 2)
 
-static spi_device_handle_t g_spi  = NULL;
-static uint16_t            *g_fb  = NULL;
-static bool                 g_bl_on = false;
+static esp_lcd_panel_io_handle_t g_io_handle = NULL;
+static esp_lcd_panel_handle_t    g_panel     = NULL;
+static SemaphoreHandle_t         g_lcd_done  = NULL;
+static uint16_t                 *g_fb     = NULL;   // framebuffer di rendering
+static uint16_t                 *g_fb_tx  = NULL;   // copia byte-swappata per il flush
+static bool                       g_bl_on = false;
 
 // ─── Colour helpers ───────────────────────────────────────────────────────────
 static inline uint16_t rgb(uint8_t r, uint8_t g, uint8_t b)
@@ -64,36 +48,13 @@ static inline uint16_t swap16(uint16_t v) { return (v << 8) | (v >> 8); }
 #define COL_MUTED   rgb(77, 96,128)
 #define COL_TEXT    rgb(221,232,245)
 
-// ─── SPI helpers ──────────────────────────────────────────────────────────────
-static void lcd_cmd(uint8_t c)
+// ─── Callback fine trasferimento colore (sincronizza il flush) ────────────────
+static bool lcd_color_done(esp_lcd_panel_io_handle_t io,
+                           esp_lcd_panel_io_event_data_t *edata, void *ctx)
 {
-    gpio_set_level(PIN_LCD_DC, 0);
-    uint8_t cc = c;                       // DMA-capable (stack), non flash
-    spi_transaction_t t = { .length = 8, .tx_buffer = &cc };
-    esp_err_t r = spi_device_polling_transmit(g_spi, &t);
-    if (r != ESP_OK) ESP_LOGE("lcd", "cmd 0x%02X tx err: %s", c, esp_err_to_name(r));
-}
-
-static void lcd_data(const uint8_t *d, size_t len)
-{
-    if (!len) return;
-    gpio_set_level(PIN_LCD_DC, 1);
-    uint8_t buf[24];                      // copia in RAM DMA-capable (i dati init sono in flash)
-    if (len > sizeof(buf)) len = sizeof(buf);
-    memcpy(buf, d, len);
-    spi_transaction_t t = { .length = len * 8, .tx_buffer = buf };
-    esp_err_t r = spi_device_polling_transmit(g_spi, &t);
-    if (r != ESP_OK) ESP_LOGE("lcd", "data(%d) tx err: %s", (int)len, esp_err_to_name(r));
-}
-
-static void lcd_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
-{
-    uint8_t d[4];
-    lcd_cmd(0x2A);
-    d[0]=x0>>8; d[1]=x0; d[2]=x1>>8; d[3]=x1; lcd_data(d,4);
-    lcd_cmd(0x2B);
-    d[0]=y0>>8; d[1]=y0; d[2]=y1>>8; d[3]=y1; lcd_data(d,4);
-    lcd_cmd(0x2C);
+    BaseType_t hp = pdFALSE;
+    if (g_lcd_done) xSemaphoreGiveFromISR(g_lcd_done, &hp);
+    return hp == pdTRUE;
 }
 
 // ─── Backlight (PWM via LEDC) ─────────────────────────────────────────────────
@@ -125,78 +86,71 @@ void display_set_brightness(uint8_t pct)  // 0-100
     ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
 }
 
-// ─── Init ─────────────────────────────────────────────────────────────────────
+// ─── Init (driver ufficiale esp_lcd / ST7789) ─────────────────────────────────
 esp_err_t display_init(void)
 {
+    g_lcd_done = xSemaphoreCreateBinary();
+
     spi_bus_config_t bus = {
         .mosi_io_num     = PIN_LCD_MOSI,
         .miso_io_num     = -1,
         .sclk_io_num     = PIN_LCD_SCLK,
         .quadwp_io_num   = -1,
         .quadhd_io_num   = -1,
-        .max_transfer_sz = FB_W * 40 * 2,
+        .max_transfer_sz = FB_BYTES + 16,
     };
     esp_err_t ret = spi_bus_initialize(LCD_SPI_HOST, &bus, SPI_DMA_CH_AUTO);
-    if (ret != ESP_OK) return ret;
+    if (ret != ESP_OK) { ESP_LOGE("lcd", "spi_bus_initialize: %s", esp_err_to_name(ret)); return ret; }
 
-    spi_device_interface_config_t dev = {
-        .clock_speed_hz = LCD_SPI_CLK_HZ,
-        .mode           = 0,
-        .spics_io_num   = PIN_LCD_CS,
-        .queue_size     = 7,
+    esp_lcd_panel_io_spi_config_t io_cfg = {
+        .dc_gpio_num         = PIN_LCD_DC,
+        .cs_gpio_num         = PIN_LCD_CS,
+        .pclk_hz             = LCD_SPI_CLK_HZ,
+        .lcd_cmd_bits        = 8,
+        .lcd_param_bits      = 8,
+        .spi_mode            = 0,
+        .trans_queue_depth   = 10,
+        .on_color_trans_done = lcd_color_done,
     };
-    ret = spi_bus_add_device(LCD_SPI_HOST, &dev, &g_spi);
-    if (ret != ESP_OK) return ret;
+    ret = esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)LCD_SPI_HOST, &io_cfg, &g_io_handle);
+    if (ret != ESP_OK) { ESP_LOGE("lcd", "panel_io_spi: %s", esp_err_to_name(ret)); return ret; }
 
-    gpio_set_direction(PIN_LCD_DC,  GPIO_MODE_OUTPUT);
-    gpio_set_direction(PIN_LCD_RST, GPIO_MODE_OUTPUT);
+    esp_lcd_panel_dev_config_t panel_cfg = {
+        .reset_gpio_num = PIN_LCD_RST,
+        .rgb_ele_order  = LCD_RGB_ELEMENT_ORDER_RGB,
+        .bits_per_pixel = 16,
+    };
+    ret = esp_lcd_new_panel_st7789(g_io_handle, &panel_cfg, &g_panel);
+    if (ret != ESP_OK) { ESP_LOGE("lcd", "new_panel_st7789: %s", esp_err_to_name(ret)); return ret; }
 
-    gpio_set_level(PIN_LCD_RST, 0); vTaskDelay(pdMS_TO_TICKS(15));
-    gpio_set_level(PIN_LCD_RST, 1); vTaskDelay(pdMS_TO_TICKS(120));
-
-    for (size_t i = 0; i < sizeof(ST7789_INIT)/sizeof(ST7789_INIT[0]); i++) {
-        lcd_cmd(ST7789_INIT[i].cmd);
-        if (ST7789_INIT[i].len)
-            lcd_data(ST7789_INIT[i].data, ST7789_INIT[i].len);
-        if (ST7789_INIT[i].delay_ms)
-            vTaskDelay(pdMS_TO_TICKS(ST7789_INIT[i].delay_ms));
-    }
-    ESP_LOGI("lcd", "ST7789 init inviato (%d cmd) @ %d MHz",
-             (int)(sizeof(ST7789_INIT)/sizeof(ST7789_INIT[0])), LCD_SPI_CLK_HZ/1000000);
+    esp_lcd_panel_reset(g_panel);
+    esp_lcd_panel_init(g_panel);
+    esp_lcd_panel_invert_color(g_panel, true);     // ST7789: inversione colore ON
+    esp_lcd_panel_disp_on_off(g_panel, true);
+    ESP_LOGI("lcd", "esp_lcd ST7789 init OK @ %d MHz", LCD_SPI_CLK_HZ/1000000);
 
     bl_init();
     display_set_brightness(90);
     g_bl_on = true;
 
-    g_fb = (uint16_t *)heap_caps_malloc(FB_BYTES, MALLOC_CAP_SPIRAM);
-    if (!g_fb)
-        g_fb = (uint16_t *)heap_caps_malloc(FB_BYTES, MALLOC_CAP_INTERNAL);
-    if (!g_fb) return ESP_ERR_NO_MEM;
+    g_fb    = (uint16_t *)heap_caps_malloc(FB_BYTES, MALLOC_CAP_SPIRAM);
+    g_fb_tx = (uint16_t *)heap_caps_malloc(FB_BYTES, MALLOC_CAP_SPIRAM);
+    if (!g_fb)    g_fb    = (uint16_t *)heap_caps_malloc(FB_BYTES, MALLOC_CAP_INTERNAL);
+    if (!g_fb_tx) g_fb_tx = (uint16_t *)heap_caps_malloc(FB_BYTES, MALLOC_CAP_INTERNAL);
+    if (!g_fb || !g_fb_tx) return ESP_ERR_NO_MEM;
 
     memset(g_fb, 0, FB_BYTES);
     return ESP_OK;
 }
 
-// ─── Flush framebuffer in 40-line strips ─────────────────────────────────────
+// ─── Flush framebuffer (esp_lcd) ──────────────────────────────────────────────
 static void display_flush(void)
 {
-    const int STRIP = 40;
-    static uint16_t strip_buf[FB_W * 40];
-
-    lcd_window(0, 0, FB_W-1, FB_H-1);
-    gpio_set_level(PIN_LCD_DC, 1);
-
-    for (int y = 0; y < FB_H; y += STRIP) {
-        int h = (y + STRIP > FB_H) ? (FB_H - y) : STRIP;
-        for (int i = 0; i < h * FB_W; i++)
-            strip_buf[i] = swap16(g_fb[y * FB_W + i]);
-        spi_transaction_t t = {
-            .length    = h * FB_W * 16,
-            .tx_buffer = strip_buf,
-        };
-        esp_err_t r = spi_device_polling_transmit(g_spi, &t);
-        if (r != ESP_OK) { ESP_LOGE("lcd", "flush tx err: %s", esp_err_to_name(r)); return; }
-    }
+    if (!g_panel || !g_fb || !g_fb_tx) return;
+    // ST7789 vuole RGB565 big-endian sul wire: byte-swap dell'intero frame.
+    for (int i = 0; i < FB_W * FB_H; i++) g_fb_tx[i] = swap16(g_fb[i]);
+    esp_lcd_panel_draw_bitmap(g_panel, 0, 0, FB_W, FB_H, g_fb_tx);
+    if (g_lcd_done) xSemaphoreTake(g_lcd_done, pdMS_TO_TICKS(500));  // attende fine DMA
 }
 
 // ─── Software renderer ────────────────────────────────────────────────────────
