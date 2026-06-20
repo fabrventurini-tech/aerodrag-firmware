@@ -12,7 +12,13 @@ CONFIG_SPIRAM_USE_MALLOC=y
 # ─── Bluetooth (NimBLE stack — lighter than Bluedroid) ───────────────────────
 CONFIG_BT_ENABLED=y
 CONFIG_BT_NIMBLE_ENABLED=y
-CONFIG_BT_NIMBLE_MAX_CONNECTIONS=5
+# Capacità connessioni: 1 peripheral (telefono) + 4 central (power/CSC/HR/ruota)
+# = 5, +2 di margine per overlap di riconnessione / secondo viewer. Il controller
+# regge fino a CONFIG_BT_CTRL_BLE_MAX_ACT=10 (conn+adv+scan), quindi 7 è entro i limiti.
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=7
+# CCCD: il telefono può sottoscrivere fino a 8 caratteristiche notify; 16 dà
+# margine (incluse le sottoscrizioni persistite sui bond).
+CONFIG_BT_NIMBLE_MAX_CCCDS=16
 CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
 CONFIG_BT_NIMBLE_ROLE_CENTRAL=y
 CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
