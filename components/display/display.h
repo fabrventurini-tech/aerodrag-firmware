@@ -197,14 +197,19 @@ static void fb_fill(uint16_t col)
     for (int i = 0; i < FB_W * FB_H; i++) g_fb[i] = col;
 }
 
-// Bring-up self-test (diagnostico): riempie lo schermo di ROSSO con la
-// retroilluminazione al massimo e fa il flush. Se dopo il flash lo schermo
-// diventa rosso -> panel + SPI + backlight OK (il problema è nel rendering UI);
-// se resta nero -> backlight/HW. Rimuovere a bring-up concluso.
+// Bring-up self-test (diagnostico): pilota la retroilluminazione nel modo più
+// diretto possibile — IO5 (LCD_BL) come GPIO digitale ALTO, bypassando il LEDC —
+// poi riempie lo schermo di ROSSO. Esiti:
+//   ROSSO            -> tutto OK (era il PWM/LEDC);
+//   illuminato/bianco -> backlight OK, problema pannello/SPI;
+//   nero totale       -> IO5 non accende il backlight (HW/pin/alimentazione VLED).
 void display_selftest(void)
 {
+    gpio_reset_pin(PIN_LCD_BL);
+    gpio_set_direction(PIN_LCD_BL, GPIO_MODE_OUTPUT);
+    gpio_set_level(PIN_LCD_BL, 1);   // IO5 alto = backlight ON (active-high da schematic)
+
     if (!g_fb) return;
-    display_set_brightness(100);
     fb_fill(COL_RED);
     display_flush();
 }
