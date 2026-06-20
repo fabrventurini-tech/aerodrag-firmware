@@ -197,6 +197,18 @@ static void fb_fill(uint16_t col)
     for (int i = 0; i < FB_W * FB_H; i++) g_fb[i] = col;
 }
 
+// Bring-up self-test (diagnostico): riempie lo schermo di ROSSO con la
+// retroilluminazione al massimo e fa il flush. Se dopo il flash lo schermo
+// diventa rosso -> panel + SPI + backlight OK (il problema è nel rendering UI);
+// se resta nero -> backlight/HW. Rimuovere a bring-up concluso.
+void display_selftest(void)
+{
+    if (!g_fb) return;
+    display_set_brightness(100);
+    fb_fill(COL_RED);
+    display_flush();
+}
+
 static void fb_circle(int cx, int cy, int r, uint16_t col)
 {
     int r2 = r * r;
