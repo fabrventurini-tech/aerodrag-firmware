@@ -66,6 +66,9 @@ static inline aerodrag_physics_t physics_compute(
     float slope = sinf(pitch_rad);  // approximation valid for small angles
 
     // Power components
+    // crr è app-autorevole (CONFIG 0xaa08, §2). CRR (0.0040) è solo un default di
+    // sicurezza per device appena flashato con NVS vuota, finché l'app non scrive la
+    // CONFIG alla connessione; non fa parte del modello canonico §6.
     float crr_val   = (cal && cal->crr > 0.0f) ? cal->crr : CRR;
     float p_rolling = crr_val * mass * GRAVITY_MS2 * s->speed_ms;
     float p_gravity = mass * GRAVITY_MS2 * slope * s->speed_ms;

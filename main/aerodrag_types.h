@@ -126,7 +126,7 @@ typedef struct {
     float   mass_kg;          // kg  — set by app via BLE 0xaa08
     float   crr;              // rolling resistance coeff — set by app via BLE 0xaa08
     float   cda_target;
-    float   wheel_circ_m;     // circonferenza ruota [m] — owned by device, set via BLE 0xaa08
+    float   wheel_circ_m;     // circonferenza ruota [m] — set by app via BLE 0xaa08 (v0.2.0, app-authoritative)
     uint32_t crc;
 } aerodrag_cal_t;
 

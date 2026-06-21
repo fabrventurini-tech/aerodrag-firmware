@@ -39,7 +39,7 @@ static const char *TAG = "ble_sens";
 extern void ble_notify_wheel_stream(const void *data, uint8_t len);
 
 /* Notifica un sensore scoperto durante la discovery (0xaa0e, ble_server.h).
- * mac_be = MAC big-endian (mac[0]=AA). */
+ * mac = MAC in display order (mac[0]=AA, primo ottetto; v0.2.3). */
 extern void ble_notify_sensor_scan(uint8_t type, const uint8_t *mac_be,
                                    int8_t rssi, const char *name, uint8_t name_len);
 
@@ -108,8 +108,8 @@ static sensor_slot_t s_slots[N_SLOTS];
 static sensor_wl_entry_t s_wl[SENSOR_WL_MAX];
 static uint8_t           s_wl_count;
 
-/* MAC dell'advertiser (addr.val è little-endian) vs whitelist (mac[] big-endian).
- * Ritorna l'indice in whitelist o -1. */
+/* MAC dell'advertiser (addr.val è little-endian) vs whitelist (mac[] display order,
+ * mac[0]=primo ottetto; v0.2.3). Ritorna l'indice in whitelist o -1. */
 static int wl_find_by_addr(const ble_addr_t *addr) {
     for (uint8_t i = 0; i < s_wl_count; i++) {
         bool match = true;

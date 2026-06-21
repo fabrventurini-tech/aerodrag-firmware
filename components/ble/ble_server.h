@@ -261,6 +261,10 @@ static int chr_access_cb(uint16_t conn_h, uint16_t attr_h,
         vals[2] = s.cadence_rpm;
         vals[3] = s.hr_bpm;
         os_mbuf_append(ctxt->om, vals, sizeof(vals));
+    } else {
+        // Char NOTIFY-only (physics/battery/wheel/coach/scan): nessuna READ ammessa.
+        // I flag GATT già lo impediscono; difesa esplicita contro READ inattese.
+        return BLE_ATT_ERR_READ_NOT_PERMITTED;
     }
     return 0;
 }
@@ -379,7 +383,7 @@ static int config_access_cb(uint16_t conn_handle, uint16_t attr_handle,
 
 // ─── SENSOR_WHITELIST (0xaa0b) callback — READ + WRITE (contract v0.2.0) ──────
 // WRITE payload: uint8 count + count×(uint8 type + uint8 mac[6]).
-// type: 1=power, 2=csc, 3=hr, 4=wheel. mac[6] big-endian ("AA:BB:..").
+// type: 1=power, 2=csc, 3=hr, 4=wheel. mac[6] in display order (mac[0]=primo ottetto, v0.2.3).
 static int sensor_wl_access_cb(uint16_t conn_handle, uint16_t attr_handle,
                                 struct ble_gatt_access_ctxt *ctxt, void *arg)
 {

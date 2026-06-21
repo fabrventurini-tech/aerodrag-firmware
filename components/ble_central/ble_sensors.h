@@ -110,7 +110,7 @@ void ble_sensors_set_wheel_circumference(float meters);
  * I sensori esterni si bondano SOLO al firmware e SOLO se il loro MAC è nella
  * whitelist scritta dall'app via BLE 0xaa0b. Anti cross-talk dalle bici vicine.
  * type: 1=power(0x1818), 2=csc(0x1816), 3=hr(0x180D), 4=wheel-Crr(0xBB00).
- * mac[6] big-endian (mac[0]=AA per "AA:BB:CC:DD:EE:FF").
+ * mac[6] in display order (mac[0]=AA, primo ottetto di "AA:BB:CC:DD:EE:FF"; v0.2.3).
  */
 #define SENSOR_WL_MAX 5
 
@@ -121,7 +121,7 @@ void ble_sensors_set_wheel_circumference(float meters);
 
 typedef struct {
     uint8_t type;
-    uint8_t mac[6];   /* big-endian, come la stringa "AA:BB:CC:DD:EE:FF" */
+    uint8_t mac[6];   /* display order: mac[0]=primo ottetto di "AA:BB:CC:DD:EE:FF" */
 } sensor_wl_entry_t;
 
 /* Imposta la whitelist (sostituisce quella corrente), la persiste in NVS,

@@ -30,6 +30,7 @@
 #include "ble_sensors.h"
 #include <string.h>
 #include <stdio.h>
+#include <ctype.h>
 
 #define COACH_TAG "coach"
 
@@ -64,6 +65,18 @@ extern device_identity_t g_identity;
 // Relay coach→app via BLE COACH_LINK (0xaa0f) — definito in ble_server.h,
 // incluso prima di questo header nello stesso TU (main.c).
 void ble_notify_coach_link(uint8_t type, uint8_t arg);
+
+// Obbligo produttore — identità (CONTRACT §3): il firmware NON deve inviare
+// hello/frame senza un device MAC valido "AA:BB:CC:DD:EE:FF".
+static inline bool coach_valid_mac(const char *m)
+{
+    if (!m) return false;
+    for (int i = 0; i < 17; i++) {
+        if ((i % 3) == 2) { if (m[i] != ':') return false; }
+        else if (!isxdigit((unsigned char)m[i])) return false;
+    }
+    return m[17] == '\0';
+}
 
 static coach_config_t                g_cfg     = {0};
 static esp_websocket_client_handle_t g_ws      = NULL;
@@ -171,6 +184,12 @@ static void _ws_handler(void *arg, esp_event_base_t base,
     esp_websocket_event_data_t *evt = (esp_websocket_event_data_t *)data;
     switch (id) {
     case WEBSOCKET_EVENT_CONNECTED:
+        // §3 obbligo produttore: senza un device MAC valido NON apriamo lo stream.
+        if (!coach_valid_mac(g_identity.device_id)) {
+            ESP_LOGE(COACH_TAG, "device_id non valido (%s): hello/frame soppressi (§3)",
+                     g_identity.device_id);
+            break;   // g_ws_ready resta false → coach_send_frame non trasmette
+        }
         ESP_LOGI(COACH_TAG, "✓ Connesso al Pi come %s (%s) fw=%s",
                  g_identity.athlete_name, g_identity.device_id, FW_VERSION_STR);
         g_ws_ready = true;
@@ -253,6 +272,8 @@ esp_err_t coach_send_frame(const aerodrag_sensors_t *s,
                             bool    lap_event)
 {
     if (!g_ws_ready || !g_ws || !p->valid) return ESP_ERR_INVALID_STATE;
+    // §3 obbligo produttore: identità MAC valida obbligatoria (difesa ridondante).
+    if (!coach_valid_mac(g_identity.device_id)) return ESP_ERR_INVALID_STATE;
 
     int64_t ts_ms = esp_timer_get_time() / 1000LL;
 
