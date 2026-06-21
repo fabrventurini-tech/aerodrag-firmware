@@ -86,6 +86,16 @@ static const ble_uuid128_t CHR_SENSOR_SCAN = BLE_UUID128_INIT(
     0xfb, 0x34, 0x9b, 0x5f, 0x80, 0x00, 0x00, 0x80,
     0x00, 0x10, 0x00, 0x00, 0x0e, 0xaa, 0x00, 0x00);
 
+// COACH_LINK (0xaa0f): relay coach→app — NOTIFY 2 B `uint8 type + uint8 arg` (v0.3.0)
+static const ble_uuid128_t CHR_COACH_LINK = BLE_UUID128_INIT(
+    0xfb, 0x34, 0x9b, 0x5f, 0x80, 0x00, 0x00, 0x80,
+    0x00, 0x10, 0x00, 0x00, 0x0f, 0xaa, 0x00, 0x00);
+
+// TIME (0xaa10): orologio oggettivo UTC — READ + WRITE `uint64 epochMs` LE (v0.3.0)
+static const ble_uuid128_t CHR_TIME = BLE_UUID128_INIT(
+    0xfb, 0x34, 0x9b, 0x5f, 0x80, 0x00, 0x00, 0x80,
+    0x00, 0x10, 0x00, 0x00, 0x10, 0xaa, 0x00, 0x00);
+
 static uint16_t g_chr_identity_h    = 0;
 static uint16_t g_chr_version_h     = 0;
 static uint16_t g_chr_ota_h         = 0;
@@ -95,6 +105,8 @@ static uint16_t g_chr_sensorwl_h    = 0;
 static uint16_t g_chr_wheelstream_h = 0;
 static uint16_t g_chr_wheelcmd_h    = 0;
 static uint16_t g_chr_sensorscan_h  = 0;
+static uint16_t g_chr_coachlink_h   = 0;
+static uint16_t g_chr_time_h        = 0;
 
 // Notify slot — 32 bytes to accommodate physics payload (28 B)
 typedef struct { uint8_t data[32]; uint8_t len; bool pending; } notify_slot_t;
@@ -107,6 +119,7 @@ static notify_slot_t g_slot_bat     = {0};
 static notify_slot_t g_slot_physics = {0};
 static notify_slot_t g_slot_wheel   = {0};
 static notify_slot_t g_slot_scan    = {0};
+static notify_slot_t g_slot_coach   = {0};
 
 static struct ble_npl_callout g_callout_pitot;
 static struct ble_npl_callout g_callout_imu;
@@ -116,6 +129,7 @@ static struct ble_npl_callout g_callout_bat;
 static struct ble_npl_callout g_callout_physics;
 static struct ble_npl_callout g_callout_wheel;
 static struct ble_npl_callout g_callout_scan;
+static struct ble_npl_callout g_callout_coach;
 static struct ble_npl_mutex   g_notify_mutex;
 
 static void callout_pitot  (struct ble_npl_event *ev);
@@ -126,6 +140,7 @@ static void callout_bat    (struct ble_npl_event *ev);
 static void callout_physics(struct ble_npl_event *ev);
 static void callout_wheel  (struct ble_npl_event *ev);
 static void callout_scan   (struct ble_npl_event *ev);
+static void callout_coach  (struct ble_npl_event *ev);
 
 // ─── BLE state ────────────────────────────────────────────────────────────────
 static uint16_t g_conn_handle    = BLE_HS_CONN_HANDLE_NONE;
@@ -142,6 +157,7 @@ static bool     g_notify_battery = false;
 static bool     g_notify_physics = false;
 static bool     g_notify_wheel   = false;
 static bool     g_notify_scan    = false;
+static bool     g_notify_coach   = false;
 
 static const char *DEVICE_NAME = "AeroDrag Pro";
 
@@ -188,7 +204,7 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
         g_conn_handle  = BLE_HS_CONN_HANDLE_NONE;
         g_notify_pitot = g_notify_imu = g_notify_env = g_notify_ant =
         g_notify_battery = g_notify_physics = g_notify_wheel =
-        g_notify_scan = false;
+        g_notify_scan = g_notify_coach = false;
         ble_advertise();
         break;
     case BLE_GAP_EVENT_SUBSCRIBE:
@@ -208,6 +224,8 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
             g_notify_wheel = event->subscribe.cur_notify;
         else if (event->subscribe.attr_handle == g_chr_sensorscan_h)
             g_notify_scan = event->subscribe.cur_notify;
+        else if (event->subscribe.attr_handle == g_chr_coachlink_h)
+            g_notify_coach = event->subscribe.cur_notify;
         break;
     default:
         break;
@@ -429,6 +447,28 @@ static int sensor_scan_access_cb(uint16_t conn_handle, uint16_t attr_handle,
     return 0;
 }
 
+// ─── TIME (0xaa10) callback — orologio oggettivo UTC (contract v0.3.0) ────────
+// READ  → uint64 epochMs LE (0 se l'orologio non è impostato, anno < 2020).
+// WRITE → uint64 epochMs LE (8 byte ESATTI): imposta l'orologio di sistema.
+static int time_access_cb(uint16_t conn_handle, uint16_t attr_handle,
+                          struct ble_gatt_access_ctxt *ctxt, void *arg)
+{
+    (void)conn_handle; (void)attr_handle; (void)arg;
+    if (ctxt->op == BLE_GATT_ACCESS_OP_READ_CHR) {
+        uint64_t ms = aerodrag_time_get_epoch_ms();   // 0 se non impostato
+        os_mbuf_append(ctxt->om, &ms, sizeof(ms));     // little-endian (ESP32)
+        return 0;
+    }
+    if (ctxt->op != BLE_GATT_ACCESS_OP_WRITE_CHR) return 0;
+    if (OS_MBUF_PKTLEN(ctxt->om) != 8) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+    uint64_t ms = 0;
+    os_mbuf_copydata(ctxt->om, 0, 8, &ms);
+    if (ms < AERODRAG_EPOCH_MIN_MS) return BLE_ATT_ERR_VALUE_NOT_ALLOWED;  // epoch < 2020
+    aerodrag_time_set_epoch_ms(ms);
+    ESP_LOGI("ble_time", "Orologio impostato: %llu ms UTC", (unsigned long long)ms);
+    return 0;
+}
+
 // ─── GATT service table ───────────────────────────────────────────────────────
 static const struct ble_gatt_svc_def GATT_SERVICES[] = {
     {
@@ -526,6 +566,20 @@ static const struct ble_gatt_svc_def GATT_SERVICES[] = {
                 .val_handle = &g_chr_sensorscan_h,
                 .flags      = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_NOTIFY,
             },
+            {
+                // Coach link relay (v0.3.0): NOTIFY 2 B (cmd/stato coach → app)
+                .uuid       = &CHR_COACH_LINK.u,
+                .access_cb  = chr_access_cb,
+                .val_handle = &g_chr_coachlink_h,
+                .flags      = BLE_GATT_CHR_F_NOTIFY,
+            },
+            {
+                // Orologio oggettivo UTC (v0.3.0): READ + WRITE uint64 epochMs LE
+                .uuid       = &CHR_TIME.u,
+                .access_cb  = time_access_cb,
+                .val_handle = &g_chr_time_h,
+                .flags      = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE,
+            },
             { 0 }
         }
     },
@@ -574,6 +628,7 @@ esp_err_t ble_server_init(aerodrag_sensors_t *sensors, SemaphoreHandle_t mutex,
     ble_npl_callout_init(&g_callout_physics, eq, callout_physics, NULL);
     ble_npl_callout_init(&g_callout_wheel,   eq, callout_wheel,   NULL);
     ble_npl_callout_init(&g_callout_scan,    eq, callout_scan,    NULL);
+    ble_npl_callout_init(&g_callout_coach,   eq, callout_coach,   NULL);
 
     nimble_port_freertos_init(nimble_host_task);
     return ESP_OK;
@@ -601,6 +656,7 @@ MAKE_CALLOUT_FN(bat,     g_slot_bat,     g_chr_battery_h,     g_notify_battery)
 MAKE_CALLOUT_FN(physics, g_slot_physics, g_chr_physics_h,     g_notify_physics)
 MAKE_CALLOUT_FN(wheel,   g_slot_wheel,   g_chr_wheelstream_h, g_notify_wheel)
 MAKE_CALLOUT_FN(scan,    g_slot_scan,    g_chr_sensorscan_h,  g_notify_scan)
+MAKE_CALLOUT_FN(coach,   g_slot_coach,   g_chr_coachlink_h,   g_notify_coach)
 
 static void fill_and_schedule(notify_slot_t *slot,
                                struct ble_npl_callout *callout,
@@ -693,6 +749,16 @@ void ble_notify_sensor_scan(uint8_t type, const uint8_t *mac_be, int8_t rssi,
     buf[8] = name_len;
     if (name_len && name) memcpy(&buf[9], name, name_len);
     fill_and_schedule(&g_slot_scan, &g_callout_scan, buf, (uint8_t)(9 + name_len));
+}
+
+// ─── Coach link relay notify (0xaa0f) — contract v0.3.0 ──────────────────────
+// 2 byte: `uint8 type` + `uint8 arg`. Il firmware inoltra all'app i comandi/stato
+// coach ricevuti sul proprio /device (start/stop/lap, uplink su/giù). Vedi CONTRACT §2.
+void ble_notify_coach_link(uint8_t type, uint8_t arg)
+{
+    if (!g_notify_coach) return;
+    uint8_t v[2] = { type, arg };
+    fill_and_schedule(&g_slot_coach, &g_callout_coach, v, sizeof(v));
 }
 
 bool ble_is_connected(void)

@@ -61,6 +61,10 @@ typedef struct {
 extern uint16_t g_current_lap;
 extern device_identity_t g_identity;
 
+// Relay coach→app via BLE COACH_LINK (0xaa0f) — definito in ble_server.h,
+// incluso prima di questo header nello stesso TU (main.c).
+void ble_notify_coach_link(uint8_t type, uint8_t arg);
+
 static coach_config_t                g_cfg     = {0};
 static esp_websocket_client_handle_t g_ws      = NULL;
 static EventGroupHandle_t            g_wifi_eg = NULL;
@@ -207,15 +211,21 @@ static void coach_handle_command(const char *data, int len)
      * nome/URL contenente "start"/"lap"/"stop" scateni comandi spuri. */
     if (!strstr(buf, "\"type\":\"cmd\"")) return;
 
-    /* Match ESATTO sull'action (niente sottostringhe generiche). */
+    /* Match ESATTO sull'action (niente sottostringhe generiche).
+     * Ogni comando atleta viene anche inoltrato all'app via BLE COACH_LINK
+     * (0xaa0f, contract v0.3.0): 0x01 start, 0x02 stop, 0x03 lap. L'app non è
+     * più connessa al /coach del Pi e riceve i comandi solo da qui. */
     if (strstr(buf, "\"action\":\"lap\"")) {
         g_coach_lap_cmd = true;
+        ble_notify_coach_link(0x03, 0);   // lapNum non noto dal comando → 0
         ESP_LOGI(COACH_TAG, "LAP dal coach");
     } else if (strstr(buf, "\"action\":\"start\"")) {
         g_coach_start_cmd = true;
+        ble_notify_coach_link(0x01, 0);
         ESP_LOGI(COACH_TAG, "START dal coach");
     } else if (strstr(buf, "\"action\":\"stop\"")) {
         g_coach_stop_cmd = true;
+        ble_notify_coach_link(0x02, 0);
         ESP_LOGI(COACH_TAG, "STOP dal coach");
     } else if (strstr(buf, "\"action\":\"ota\"")) {
         // Formato: {"type":"cmd","action":"ota","url":"http://..."}
@@ -263,15 +273,19 @@ esp_err_t coach_send_frame(const aerodrag_sensors_t *s,
         if (c == '"' || c == '\\' || (unsigned char)c < 0x20) athlete_safe[i] = '_';
     }
 
-    char json[400];
+    // Timestamp oggettivo UTC (contract v0.3.0): 0 se l'orologio non è impostato
+    // (l'app lo imposta via BLE TIME 0xaa10). `t` resta il monotòno di sorgente.
+    uint64_t t_utc = aerodrag_time_get_epoch_ms();
+
+    char json[420];
     int n = snprintf(json, sizeof(json),
         "{\"device\":\"%s\",\"athlete\":\"%s\","
-        "\"t\":%lld,\"CdA\":%.4f,\"pwr\":%d,\"spd\":%.1f,"
+        "\"t\":%lld,\"tUtc\":%llu,\"CdA\":%.4f,\"pwr\":%d,\"spd\":%.1f,"
         "\"pitch\":%.1f,\"hr\":%d,\"cad\":%d,\"wind\":%.2f,"
         "\"rho\":%.4f,\"pctAero\":%d,\"lap\":%d,"
         "\"lapEvent\":%s,\"battery\":%d}",
         g_identity.device_id, athlete_safe,
-        (long long)ts_ms, p->CdA, s->power_w, s->speed_ms * 3.6f,
+        (long long)ts_ms, (unsigned long long)t_utc, p->CdA, s->power_w, s->speed_ms * 3.6f,
         s->pitch_deg, s->hr_bpm, s->cadence_rpm, p->wind_ms,
         p->rho, p->pct_aero, g_current_lap,
         lap_event ? "true" : "false", battery_pct);

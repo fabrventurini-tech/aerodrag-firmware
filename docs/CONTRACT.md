@@ -1,18 +1,18 @@
 # AeroDrag — Interface Contract
 
 ```
-contract: v0.3.0 (draft)
+contract: v0.3.0
 owner:    aerodrag-firmware (questa repo è la fonte di verità unica)
-status:   draft — Fase 1: recisione del live app↔pi. Da validare e ratificare.
+status:   ratified
 date:     2026-06-21
 ```
 
-> ⚠️ **BOZZA (v0.3.0, Fase 1).** Questa revisione **recide il legame live diretto
-> app↔Pi**: il telefono resta **solo-BLE** verso il proprio ESP32 (così non lascia
-> la rete internet), e l'**ESP32 diventa l'uplink WiFi primario** verso il Pi. È un
-> cambiamento di **ruolo/architettura**, non solo di payload. Resta `draft` finché
-> non è validata; le repo figlie **non** implementano prima della ratifica.
-> Vedi changelog v0.3.0 (§9) e il **Confine H riservato** (§7) per il cloud (Fase 2).
+> **v0.3.0 — Fase 1: recisione del live app↔Pi.** Il telefono resta **solo-BLE** verso
+> il proprio ESP32 (così non lascia la rete internet); l'**ESP32 è l'uplink WiFi
+> primario** verso il Pi. **Lato firmware (madre) è già implementato** (`COACH_LINK
+> 0xaa0f`, `TIME 0xaa10`, `tUtc`). Le figlie si adeguano come consumer: `aerodrag-new`
+> (issue dedicata), `aerodrag-pi`/`aerodrag-coach` invariati sul wire (vedi §3/§4).
+> Confine **H** (cloud, §7) resta **riservato** per la Fase 2. Changelog in §9.
 
 Questo documento è l'**unica fonte di verità** per le interfacce fra i quattro
 componenti AeroDrag. Le repo figlie **implementano** questo contratto, non lo
@@ -35,7 +35,7 @@ SemVer del contratto:
         │                                        │
    (A) BLE GATT 0xAA00                       (B) WiFi WS /device  ◄─ UPLINK PRIMARIO
    binario LE, 10 Hz                         JSON 2 Hz ↑ ; cmd coach ↓
-   + COACH_LINK 0xaa0f (cmd/stato coach → app)     │ (relay → app via 0xaa0f)
+   + COACH_LINK 0xaa0f (cmd coach → app)           │ (relay → app via 0xaa0f)
         ▼                                          ▼
    NEW (app TS, Expo)                          PI (gateway JS) server.js :8080
    SOLO BLE verso il proprio ESP32             - /device (firmware: telemetria + cmd)
@@ -90,8 +90,8 @@ MTU richiesto ≥ 53 (si negozia 185): PHYSICS=28 B, READ IDENTITY=50 B.
 | WHEEL_STREAM | `aa0c` | N | 10 Hz | 16 | `float speedMs, accelMs2, tempC, vibRMS` — relay dei dati grezzi del sensore ruota durante la calibrazione Crr |
 | WHEEL_CMD | `aa0d` | W | on-demand | 1 | `uint8` comando coast-down: 0x01 indoor, 0x02 outdoor-A, 0x03 outdoor-B, 0xFF cancel → inoltrato dal firmware al sensore ruota |
 | SENSOR_SCAN | `aa0e` | W+N | on-pair | var | **W** 1B: 0x01 start / 0x00 stop discovery. **N** (1 entry per sensore scoperto): `uint8 type` + `uint8 mac[6]` + `int8 rssi` + `uint8 nameLen` + `char name[nameLen]` |
-| COACH_LINK | `aa0f` | N | event-driven | 2 | **(v0.3.0)** relay coach→app: `uint8 type` + `uint8 arg`. Il firmware inoltra all'app i comandi/stato coach ricevuti sul suo `/device`. Vedi sotto |
-| TIME | `aa10` | R+W | on-connect | 8 | **(v0.3.0)** `uint64 epochMs` (UTC, ms, little-endian): orologio oggettivo del device. **W** lo imposta (RTC PCF85063), **R** lo legge. Vedi "Timebase oggettivo" |
+| COACH_LINK | `aa0f` | N | event-driven | 2 | **(v0.3.0)** relay coach→app: `uint8 type` + `uint8 arg`. Il firmware inoltra all'app i **comandi coach** (`start`/`stop`/`lap`) ricevuti sul suo `/device`. Vedi sotto |
+| TIME | `aa10` | R+W | on-connect | 8 | **(v0.3.0)** `uint64 epochMs` (UTC, ms, **little-endian**, 8 byte esatti): orologio oggettivo del device. **W** lo imposta (orologio di sistema), **R** lo legge (`0` se non impostato). Vedi "Timebase oggettivo" |
 
 ### Vincoli `CONFIG` (0xaa08)
 - **12 byte**: `massKg`∈[33,200], `crr`∈[0.001,0.025], `wheelCircM`∈[1.0,2.5].
@@ -153,24 +153,30 @@ bici vicine; il firmware resta l'unica fonte di verità).
 
 ### Coach link `COACH_LINK` (0xaa0f) — relay coach→app (v0.3.0)
 Con la **recisione del live app↔Pi** (§3) il telefono non è più connesso al `/coach`
-del Pi: non riceverebbe quindi i comandi/lo stato del coach. Il firmware — che è già
-connesso al Pi su `/device` e **riceve già** i comandi `start`/`stop`/`lap` (§4) — li
-**inoltra all'app** via NOTIFY su `0xaa0f`. Payload **2 byte**: `uint8 type` + `uint8 arg`.
+del Pi: non riceverebbe quindi i comandi del coach. Il firmware — che è già connesso al
+Pi su `/device` e **riceve già** i comandi `start`/`stop`/`lap` (§4) — li **inoltra
+all'app** via NOTIFY su `0xaa0f`. Payload **2 byte esatti**: `uint8 type` + `uint8 arg`.
+
+**Set di eventi (esaustivo — il firmware emette esattamente questi):**
 
 | `type` | significato | `arg` |
 |--------|-------------|-------|
-| `0x01` | cmd **start** sessione | 0 |
-| `0x02` | cmd **stop** sessione  | 0 |
-| `0x03` | cmd **lap**            | `lapNum` (uint8, 0 = auto/sconosciuto) |
-| `0x10` | **coach connesso** (un coach sta osservando/registrando) | 0 |
-| `0x11` | **coach disconnesso** | 0 |
-| `0x12` | **stato registrazione** | 0 = off, 1 = on |
+| `0x01` | cmd **start** sessione | `0` |
+| `0x02` | cmd **stop** sessione  | `0` |
+| `0x03` | cmd **lap**            | `0` (lapNum non noto dal comando del coach) |
 
-L'app usa questi eventi per segmentare la **propria** registrazione locale (che poi
-verrà caricata sul cloud, §7) e per mostrare lo stato "REC"/coach. La fonte di verità
-della sessione registrata dal coach resta il Pi (dai frame `/device`). Eventi
-sconosciuti → ignorati (forward-compat). L'app **non** invia comandi al coach su BLE:
-le azioni atleta (es. lap manuale) passano dal firmware, che è il device comandato.
+- L'app **deve ignorare** ogni `type` non elencato (i valori restano **riservati** per
+  estensioni future → forward-compat).
+- Lo **stato "REC"** dell'app si **deriva** da `start`/`stop` (non c'è un evento REC
+  separato): `start` → REC on, `stop` → REC off.
+- L'app usa questi eventi per segmentare la **propria** registrazione locale (che poi
+  verrà caricata sul cloud, §7). La sessione registrata dal **coach** resta comunque
+  generata dal **Pi** dai frame `/device` (fonte di verità lato coach).
+- L'evento è **edge-only** (emesso quando arriva il comando), quindi è significativo
+  mentre l'app è connessa e **sottoscritta** a `0xaa0f`: non c'è stato "ritardato" da
+  leggere alla sottoscrizione.
+- L'app **non** invia comandi al coach via BLE (NOTIFY-only): le azioni atleta passano
+  dal firmware, che è il device comandato.
 
 ### Timebase oggettivo `TIME` (0xaa10) + `tUtc` (v0.3.0)
 I frame di rete portano oggi `t` = **ms-da-boot** del firmware: monotòno e buono per
@@ -178,17 +184,22 @@ ordinare/rilevare deriva **dentro** una sessione, ma **soggettivo** (non confron
 fra device, inutile per il cloud e per la fusione aero+biomeccanica). Si introduce un
 **timestamp oggettivo UTC**.
 
-- Il device mantiene un **orologio assoluto** sull'**RTC PCF85063** (battery-backed).
+- Il device mantiene l'ora sull'**orologio di sistema** (`settimeofday`/`gettimeofday`).
+  Il chip **RTC PCF85063** è presente sulla board ma **non ancora usato** (persistenza
+  dell'ora attraverso il power-off → miglioria futura; oggi l'ora si perde al riavvio
+  e va re-impostata alla connessione).
 - **Sincronizzazione**: alla connessione il client con clock affidabile (in pratica
-  l'**app**, dal clock del telefono) **scrive** l'epoch UTC corrente in `TIME 0xaa10`
-  (`uint64 epochMs`, LE); il firmware imposta l'RTC. La **READ** restituisce l'ora
-  corrente del device (per verificare/diagnosticare la deriva).
-- **Nei frame** (§3) compare il campo **`tUtc`** = epoch ms UTC dall'RTC. `t` resta come
-  monotòno di sorgente. Se l'RTC non è ancora stato impostato, `tUtc = 0` e il consumer
-  usa il fallback (`serverTs` del Pi).
-- **Priorità delle sorgenti di tempo**: (1) RTC del device impostato dall'app; (2)
-  `serverTs` del Pi (il Pi può essere offline/senza NTP → meno affidabile); il cloud
-  (§7) ordina/deduplica per `tUtc` quando presente.
+  l'**app**, dal clock del telefono) **scrive** in `TIME 0xaa10` l'epoch UTC corrente
+  come `uint64 epochMs` **little-endian, esattamente 8 byte**. Regole della WRITE
+  (firmware): lunghezza ≠ 8 → errore ATT `INVALID_ATTR_VALUE_LEN`; valore
+  `< 2020-01-01` (`1577836800000`) → errore ATT `VALUE_NOT_ALLOWED`. La **READ**
+  restituisce l'ora corrente del device come `uint64` LE, oppure **`0`** se mai impostata.
+- **Nei frame** (§3) compare il campo **`tUtc`** = epoch ms UTC. `t` resta il monotòno di
+  sorgente. Se l'orologio non è impostato, **`tUtc = 0`** (soglia: epoch `< 2020`) e il
+  consumer usa il fallback (`serverTs` del Pi).
+- **Priorità delle sorgenti di tempo**: (1) `tUtc` del device (impostato dall'app); (2)
+  `serverTs` del Pi (può essere offline/senza NTP → meno affidabile); il cloud (§7)
+  ordina/deduplica per `tUtc` quando `> 0`.
 - **Fase 3**: `tUtc` è il **riferimento temporale comune** per allineare aerodinamica e
   biomeccanica fra sensori/device diversi.
 
@@ -271,7 +282,7 @@ Endpoint app→pi (coach): `ws://<pi>:8080/coach` — **DEPRECATO** (v0.3.0).
 | Campo | Tipo | Unità | Note |
 |-------|------|-------|------|
 | `t` | number | ms | timestamp **soggettivo** monotòno (ms da boot per il firmware); per ordinare/deriva intra-sessione |
-| `tUtc` | number | ms | **(v0.3.0)** timestamp **oggettivo** epoch UTC dall'RTC del device; `0` se RTC non impostato → fallback `serverTs`. Vedi §2 "Timebase oggettivo" |
+| `tUtc` | number | ms | **(v0.3.0)** timestamp **oggettivo** epoch UTC dall'orologio del device; `0` se non impostato (epoch `< 2020`) → fallback `serverTs`. Vedi §2 "Timebase oggettivo" |
 | `device` | string | — | MAC BLE `AA:BB:CC:DD:EE:FF`; **obbligatorio**, chiave di sessione |
 | `athlete` | string | — | nome atleta (sanificato: niente `"` `\` o ctrl) |
 | `lap` | number | — | giro corrente, ≥1 |
@@ -462,23 +473,25 @@ grezzo ad alta frequenza (vedi forward-compat in §3) e l'identità atleta-centr
 
 ## 9. Changelog
 
-### v0.3.0 (draft) — 2026-06-21
+### v0.3.0 — 2026-06-21
 **Recisione del live app↔Pi + uplink ESP32 primario** (cambiamento di ruolo/architettura →
-MINOR con deprecazione; bozza, da ratificare). Decisione dell'owner del progetto.
+MINOR con deprecazione). Decisione dell'owner del progetto. **Firmware (madre) implementato.**
 - **App solo-BLE**: `aerodrag-new` non si connette più al `/coach` del Pi per il live;
   resta in BLE verso il proprio ESP32 e **conserva la rete internet** del telefono.
 - **ESP32 = uplink primario** verso il Pi (`/device`, confine B). Già implementato lato
   firmware/Pi: cambia il *ruolo*, non il payload dei frame (§3 invariato).
 - **Confine C (`new → pi /coach`) DEPRECATO** → fallback legacy (app in sim senza ESP32);
   rimozione in un MAJOR futuro.
-- **Nuova `COACH_LINK 0xaa0f`** (§2): il firmware inoltra all'app i comandi/stato coach
-  (`start`/`stop`/`lap`, coach connesso, stato REC) ricevuti sul `/device`. I comandi
-  all'atleta non passano più dal `/coach` dell'app (§4).
-- **Timestamp oggettivo (`TIME 0xaa10` + `tUtc`)** (§2/§3): il device mantiene un
-  orologio UTC sull'RTC PCF85063 (impostato dall'app alla connessione) e marca i frame
-  con `tUtc` (epoch UTC). `t` resta il monotòno soggettivo. Abilita ordinamento/dedup
-  assoluti (cloud, §7) e l'allineamento temporale aero↔biomeccanica (Fase 3). Il `ts`
-  di sessione (§5) deriva da `tUtc` quando disponibile.
+- **Nuova `COACH_LINK 0xaa0f`** (§2): il firmware inoltra all'app **solo** i comandi
+  coach `start`/`stop`/`lap` (NOTIFY 2 B `type`+`arg`) ricevuti sul `/device`; l'app
+  deriva la REC da start/stop e ignora i `type` non elencati. I comandi all'atleta non
+  passano più dal `/coach` dell'app (§4).
+- **Timestamp oggettivo (`TIME 0xaa10` + `tUtc`)** (§2/§3): il device tiene l'ora
+  sull'**orologio di sistema** (impostato dall'app alla connessione, `uint64 epochMs` LE
+  8 B; l'RTC PCF85063 non è ancora usato) e marca i frame con `tUtc` (epoch UTC, `0` se
+  non impostato). `t` resta il monotòno soggettivo. Abilita ordinamento/dedup assoluti
+  (cloud, §7) e l'allineamento temporale aero↔biomeccanica (Fase 3). Il `ts` di sessione
+  (§5) deriva da `tUtc` quando `> 0`.
 - **Confine H riservato** (§7): cloud come **archivio canonico** (Fase 2), che sostituisce
   ogni fallback LAN app↔Pi. Note di **forward-compat** (§3): la sorgente del dato grezzo
   ad alta frequenza è l'ESP32; l'archivio non è vincolato alla vista decimata (Fase 3:
