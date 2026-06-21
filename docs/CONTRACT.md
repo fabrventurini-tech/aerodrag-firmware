@@ -91,6 +91,7 @@ MTU richiesto ≥ 53 (si negozia 185): PHYSICS=28 B, READ IDENTITY=50 B.
 | WHEEL_CMD | `aa0d` | W | on-demand | 1 | `uint8` comando coast-down: 0x01 indoor, 0x02 outdoor-A, 0x03 outdoor-B, 0xFF cancel → inoltrato dal firmware al sensore ruota |
 | SENSOR_SCAN | `aa0e` | W+N | on-pair | var | **W** 1B: 0x01 start / 0x00 stop discovery. **N** (1 entry per sensore scoperto): `uint8 type` + `uint8 mac[6]` + `int8 rssi` + `uint8 nameLen` + `char name[nameLen]` |
 | COACH_LINK | `aa0f` | N | event-driven | 2 | **(v0.3.0)** relay coach→app: `uint8 type` + `uint8 arg`. Il firmware inoltra all'app i comandi/stato coach ricevuti sul suo `/device`. Vedi sotto |
+| TIME | `aa10` | R+W | on-connect | 8 | **(v0.3.0)** `uint64 epochMs` (UTC, ms, little-endian): orologio oggettivo del device. **W** lo imposta (RTC PCF85063), **R** lo legge. Vedi "Timebase oggettivo" |
 
 ### Vincoli `CONFIG` (0xaa08)
 - **12 byte**: `massKg`∈[33,200], `crr`∈[0.001,0.025], `wheelCircM`∈[1.0,2.5].
@@ -171,6 +172,26 @@ della sessione registrata dal coach resta il Pi (dai frame `/device`). Eventi
 sconosciuti → ignorati (forward-compat). L'app **non** invia comandi al coach su BLE:
 le azioni atleta (es. lap manuale) passano dal firmware, che è il device comandato.
 
+### Timebase oggettivo `TIME` (0xaa10) + `tUtc` (v0.3.0)
+I frame di rete portano oggi `t` = **ms-da-boot** del firmware: monotòno e buono per
+ordinare/rilevare deriva **dentro** una sessione, ma **soggettivo** (non confrontabile
+fra device, inutile per il cloud e per la fusione aero+biomeccanica). Si introduce un
+**timestamp oggettivo UTC**.
+
+- Il device mantiene un **orologio assoluto** sull'**RTC PCF85063** (battery-backed).
+- **Sincronizzazione**: alla connessione il client con clock affidabile (in pratica
+  l'**app**, dal clock del telefono) **scrive** l'epoch UTC corrente in `TIME 0xaa10`
+  (`uint64 epochMs`, LE); il firmware imposta l'RTC. La **READ** restituisce l'ora
+  corrente del device (per verificare/diagnosticare la deriva).
+- **Nei frame** (§3) compare il campo **`tUtc`** = epoch ms UTC dall'RTC. `t` resta come
+  monotòno di sorgente. Se l'RTC non è ancora stato impostato, `tUtc = 0` e il consumer
+  usa il fallback (`serverTs` del Pi).
+- **Priorità delle sorgenti di tempo**: (1) RTC del device impostato dall'app; (2)
+  `serverTs` del Pi (il Pi può essere offline/senza NTP → meno affidabile); il cloud
+  (§7) ordina/deduplica per `tUtc` quando presente.
+- **Fase 3**: `tUtc` è il **riferimento temporale comune** per allineare aerodinamica e
+  biomeccanica fra sensori/device diversi.
+
 #### Ordine byte del MAC in `0xaa0b`/`0xaa0e` (seam firmware↔new) — (v0.2.3)
 In `SENSOR_WHITELIST` (0xaa0b) e nelle notifiche `SENSOR_SCAN` (0xaa0e) il campo
 `uint8 mac[6]` è in **ordine di visualizzazione** (display order): `mac[0]` = primo
@@ -229,6 +250,7 @@ Endpoint app→pi (coach): `ws://<pi>:8080/coach` — **DEPRECATO** (v0.3.0).
 ```json
 {
   "t": 1716892800000,
+  "tUtc": 1716892800000,
   "device": "AA:BB:CC:DD:EE:FF",
   "athlete": "Mario Rossi",
   "lap": 2,
@@ -248,7 +270,8 @@ Endpoint app→pi (coach): `ws://<pi>:8080/coach` — **DEPRECATO** (v0.3.0).
 
 | Campo | Tipo | Unità | Note |
 |-------|------|-------|------|
-| `t` | number | ms | timestamp sorgente (ms da boot per il firmware) |
+| `t` | number | ms | timestamp **soggettivo** monotòno (ms da boot per il firmware); per ordinare/deriva intra-sessione |
+| `tUtc` | number | ms | **(v0.3.0)** timestamp **oggettivo** epoch UTC dall'RTC del device; `0` se RTC non impostato → fallback `serverTs`. Vedi §2 "Timebase oggettivo" |
 | `device` | string | — | MAC BLE `AA:BB:CC:DD:EE:FF`; **obbligatorio**, chiave di sessione |
 | `athlete` | string | — | nome atleta (sanificato: niente `"` `\` o ctrl) |
 | `lap` | number | — | giro corrente, ≥1 |
@@ -349,6 +372,11 @@ con nome `session_{ts}_{deviceIdHex}.json`. Schema:
 Questo schema è **condiviso** fra Pi (produttore), coach (sink/visualizzatore) e
 app (tipi TS in `aerodrag-new/src/store`). Modifiche → seam `coach↔new`.
 
+**Timestamp oggettivo (v0.3.0):** il `ts` della sessione DOVREBBE derivare dal `tUtc`
+del device (epoch UTC, §2/§3) quando disponibile, così le sessioni sono ordinabili e
+deduplicabili in modo assoluto fra device diversi (chiave cloud, §7). Fallback al
+`serverTs` del Pi se `tUtc = 0`.
+
 **Vincolo nome file (v0.1.1, raffinato in v0.1.2):** poiché il Pi rifiuta a monte
 i frame senza `device` valido (§3), ogni sessione persistita ha un `deviceId`
 valido. Il nome file è **sempre** `session_{ts}_{deviceIdHex}.json` con
@@ -446,6 +474,11 @@ MINOR con deprecazione; bozza, da ratificare). Decisione dell'owner del progetto
 - **Nuova `COACH_LINK 0xaa0f`** (§2): il firmware inoltra all'app i comandi/stato coach
   (`start`/`stop`/`lap`, coach connesso, stato REC) ricevuti sul `/device`. I comandi
   all'atleta non passano più dal `/coach` dell'app (§4).
+- **Timestamp oggettivo (`TIME 0xaa10` + `tUtc`)** (§2/§3): il device mantiene un
+  orologio UTC sull'RTC PCF85063 (impostato dall'app alla connessione) e marca i frame
+  con `tUtc` (epoch UTC). `t` resta il monotòno soggettivo. Abilita ordinamento/dedup
+  assoluti (cloud, §7) e l'allineamento temporale aero↔biomeccanica (Fase 3). Il `ts`
+  di sessione (§5) deriva da `tUtc` quando disponibile.
 - **Confine H riservato** (§7): cloud come **archivio canonico** (Fase 2), che sostituisce
   ogni fallback LAN app↔Pi. Note di **forward-compat** (§3): la sorgente del dato grezzo
   ad alta frequenza è l'ESP32; l'archivio non è vincolato alla vista decimata (Fase 3:
