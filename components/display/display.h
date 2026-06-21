@@ -40,13 +40,19 @@ static inline uint16_t rgb(uint8_t r, uint8_t g, uint8_t b)
 }
 static inline uint16_t swap16(uint16_t v) { return (v << 8) | (v >> 8); }
 
-#define COL_BG      rgb(9,  13, 20)
-#define COL_SURFACE rgb(17, 25, 38)
-#define COL_TEAL    rgb(0,  212,170)
-#define COL_AMBER   rgb(245,166, 35)
-#define COL_RED     rgb(242, 69, 96)
-#define COL_MUTED   rgb(77, 96,128)
-#define COL_TEXT    rgb(221,232,245)
+// ── AeroDrag palette unificata (RGB565 via rgb(), derivata dall'hex) ──────────
+#define COL_ACCENT   rgb(0,   217, 163)  // #00d9a3  CdA, brand, OK, attivo
+#define COL_POWER    rgb(245, 166, 35)   // #f5a623  potenza, quota AERO, warning
+#define COL_SPEED    rgb(77,  159, 255)  // #4d9fff  velocità, rolling, info
+#define COL_ALERT    rgb(255, 77,  106)  // #ff4d6a  SOLO FC, peak, allarmi
+#define COL_POSITIVE rgb(34,  197, 94)   // #22c55e  new best, delta migliore
+#define COL_TEXT     rgb(219, 230, 246)  // #dbe6f6  valori, titoli
+#define COL_TEXTDIM  rgb(131, 152, 189)  // #8398bd  testo secondario
+#define COL_MUTED    rgb(70,  88,  124)  // #46587c  label, unità, assi
+#define COL_SURFACE  rgb(15,  20,  32)   // #0f1420  card
+#define COL_TRACK    rgb(30,  40,  64)   // #1e2840  track anelli/barre
+#define COL_PANEL    rgb(19,  26,  40)   // #131a28  divisori
+#define COL_BG       rgb(7,   9,   15)   // #07090f  sfondo schermo
 
 // ─── Callback fine trasferimento colore (sincronizza il flush) ────────────────
 static bool lcd_color_done(esp_lcd_panel_io_handle_t io,
@@ -159,23 +165,6 @@ static void display_flush(void)
 static void fb_fill(uint16_t col)
 {
     for (int i = 0; i < FB_W * FB_H; i++) g_fb[i] = col;
-}
-
-// Bring-up self-test (diagnostico): pilota la retroilluminazione nel modo più
-// diretto possibile — IO5 (LCD_BL) come GPIO digitale ALTO, bypassando il LEDC —
-// poi riempie lo schermo di ROSSO. Esiti:
-//   ROSSO            -> tutto OK (era il PWM/LEDC);
-//   illuminato/bianco -> backlight OK, problema pannello/SPI;
-//   nero totale       -> IO5 non accende il backlight (HW/pin/alimentazione VLED).
-void display_selftest(void)
-{
-    gpio_reset_pin(PIN_LCD_BL);
-    gpio_set_direction(PIN_LCD_BL, GPIO_MODE_OUTPUT);
-    gpio_set_level(PIN_LCD_BL, 1);   // IO5 alto = backlight ON (active-high da schematic)
-
-    if (!g_fb) return;
-    fb_fill(COL_RED);
-    display_flush();
 }
 
 static void fb_circle(int cx, int cy, int r, uint16_t col)
@@ -374,11 +363,11 @@ static uint16_t power_zone_col(uint16_t w, uint16_t ftp)
     if (!ftp || !w) return COL_MUTED;
     uint32_t pct = (uint32_t)w * 100u / ftp;
     if (pct < 55)  return COL_MUTED;
-    if (pct < 75)  return COL_TEAL;
+    if (pct < 75)  return COL_ACCENT;
     if (pct < 90)  return rgb(80, 200, 120);
-    if (pct < 105) return COL_AMBER;
+    if (pct < 105) return COL_POWER;
     if (pct < 120) return rgb(255, 120, 20);
-    return COL_RED;
+    return COL_ALERT;
 }
 
 static const char *power_zone_name(uint16_t w, uint16_t ftp)
@@ -427,10 +416,10 @@ static void fb_battery(int x, int y, uint8_t pct, uint16_t col)
 static void render_status_dots(const aerodrag_sensors_t *s)
 {
     struct { int x; uint16_t col; char lbl; } dots[4] = {
-        { FB_W - 35, g_wifi_ready    ? COL_TEAL : COL_MUTED, 'W' },
-        { FB_W - 26, g_ble_connected ? COL_TEAL : COL_MUTED, 'B' },
-        { FB_W - 17, s->ant_valid    ? COL_TEAL : COL_MUTED, 'A' },
-        { FB_W -  8, s->pitot_valid  ? COL_TEAL : COL_MUTED, 'P' },
+        { FB_W - 35, g_wifi_ready    ? COL_ACCENT : COL_MUTED, 'W' },
+        { FB_W - 26, g_ble_connected ? COL_ACCENT : COL_MUTED, 'B' },
+        { FB_W - 17, s->ant_valid    ? COL_ACCENT : COL_MUTED, 'A' },
+        { FB_W -  8, s->pitot_valid  ? COL_ACCENT : COL_MUTED, 'P' },
     };
     for (int i = 0; i < 4; i++) {
         fb_char(dots[i].x - 2, FB_H - 19, dots[i].lbl, COL_MUTED, 1);
@@ -468,7 +457,7 @@ switch (g_screen) {
     case SCR_PAIRING: {
         if (!g_qr_valid) {
             int w = (int)strlen(g_pairing_id) * 6;
-            fb_str((FB_W - w) / 2, CY - 4, g_pairing_id, COL_TEAL, 1);
+            fb_str((FB_W - w) / 2, CY - 4, g_pairing_id, COL_ACCENT, 1);
             break;
         }
         int sz  = qrcodegen_getSize(g_qr_cache);
@@ -504,10 +493,10 @@ switch (g_screen) {
             int id_w   = id_len * 6;
             int id_x   = (FB_W - id_w) / 2;
             int id_y   = ry + rect_h + 8;
-            fb_str(id_x, id_y, g_pairing_id, COL_MUTED, 1);
+            fb_str(id_x, id_y, g_pairing_id, COL_TEXTDIM, 1);
         }
 
-        fb_circle(CX, ry + rect_h + 30, 4, COL_RED);
+        fb_circle(CX, ry + rect_h + 30, 4, COL_ALERT);
         break;
     }
 
@@ -526,10 +515,10 @@ switch (g_screen) {
         if (pct < 0.0f) pct = 0.0f;
         if (pct > 1.0f) pct = 1.0f;
 
-        uint16_t arc_col = (pct < 0.33f) ? COL_TEAL
-                         : (pct < 0.67f) ? COL_AMBER : COL_RED;
+        uint16_t arc_col = (pct < 0.33f) ? COL_ACCENT
+                         : (pct < 0.67f) ? COL_POWER : COL_ALERT;
 
-        fb_arc(CX, CY, 110, 12, -225.0f, 45.0f, COL_SURFACE);
+        fb_arc(CX, CY, 110, 12, -225.0f, 45.0f, COL_TRACK);
         if (valid && pct > 0.005f)
             fb_arc(CX, CY, 110, 12, -225.0f, -225.0f + pct * 270.0f, arc_col);
 
@@ -563,7 +552,7 @@ switch (g_screen) {
         // "NEW BEST" blink
         if (now_ms < g_best_flash_end && (now_ms / 500) % 2 == 0) {
             int nbw = (int)strlen("NEW BEST") * 12;
-            fb_str((FB_W - nbw) / 2, CY + 44, "NEW BEST", COL_TEAL, 2);
+            fb_str((FB_W - nbw) / 2, CY + 44, "NEW BEST", COL_POSITIVE, 2);
         }
 
         // Bottom info bar: speed | wind | power
@@ -579,20 +568,20 @@ switch (g_screen) {
             char wa[6];
             snprintf(wa, sizeof(wa), "%d", (int)v_air);
             int wx = CX - (int)strlen(wa) * 6;
-            fb_str(wx, bby, wa, COL_TEAL, 2);
+            fb_str(wx, bby, wa, COL_ACCENT, 2);
             fb_str(wx + (int)strlen(wa) * 12, bby + 8, "wind", COL_MUTED, 2);
         }
         if (s->power_w > 0) {
             char pw[6];
             snprintf(pw, sizeof(pw), "%d", s->power_w);
             int px = FB_W - (int)strlen(pw) * 12 - 14;
-            fb_str(px, bby, pw, COL_AMBER, 2);
+            fb_str(px, bby, pw, COL_POWER, 2);
             fb_str(px + (int)strlen(pw) * 12, bby + 8, "W", COL_MUTED, 2);
         }
 
         // Battery icon top-right
         {
-            uint16_t bat_col = s->battery_pct > 25 ? COL_TEAL : COL_RED;
+            uint16_t bat_col = s->battery_pct > 25 ? COL_ACCENT : COL_ALERT;
             char bat_str[6];
             snprintf(bat_str, sizeof(bat_str), "%d%%", s->battery_pct);
             int bpw = (int)strlen(bat_str) * 12;
@@ -610,15 +599,15 @@ switch (g_screen) {
             char nbuf[6];
             snprintf(nbuf, sizeof(nbuf), "%d", g_lap_num_display);
             int nw = (int)strlen(nbuf) * 30;
-            fb_str((FB_W - nw) / 2, 40, nbuf, COL_TEAL, 5);
+            fb_str((FB_W - nw) / 2, 40, nbuf, COL_ACCENT, 5);
         }
         {
-            uint16_t lap_col = (g_lap_elapsed_s < 60) ? COL_TEAL : COL_AMBER;
+            uint16_t lap_col = (g_lap_elapsed_s < 60) ? COL_ACCENT : COL_POWER;
             fb_time((FB_W - 5*24) / 2, 95, g_lap_elapsed_s, lap_col, 4);
         }
         fb_str((FB_W - 18) / 2, 130, "LAP", COL_MUTED, 1);
         fb_hline(30, FB_W - 30, 150, COL_SURFACE);
-        fb_hline(30, FB_W - 30, 151, COL_SURFACE);
+        fb_hline(30, FB_W - 30, 151, COL_PANEL);
         fb_str((FB_W - 18) / 2, 162, "TOT", COL_MUTED, 1);
         fb_time((FB_W - 5*18) / 2, 174, g_session_elapsed_s, COL_TEXT, 3);
         render_status_dots(s);
@@ -635,7 +624,7 @@ switch (g_screen) {
         char spd_buf[6];
         snprintf(spd_buf, sizeof(spd_buf), "%d", (int)spd_kmh);
         int sw = (int)strlen(spd_buf) * 36;
-        fb_str((FB_W - sw) / 2, CY - 22, spd_buf, COL_TEXT, 6);
+        fb_str((FB_W - sw) / 2, CY - 22, spd_buf, COL_SPEED, 6);
 
         int km_w = 4 * 12;
         fb_str((FB_W - km_w) / 2, CY + 26, "km/h", COL_MUTED, 2);
@@ -647,16 +636,16 @@ switch (g_screen) {
             snprintf(air,  sizeof(air),  "Air: %d km/h",  (int)v_air);
             snprintf(wind, sizeof(wind), "Wind: %+d km/h", (int)delta);
             int aw = (int)strlen(air) * 12, ww = (int)strlen(wind) * 12;
-            fb_str((FB_W - aw) / 2, CY + 44, air,  COL_TEAL, 2);
-            uint16_t wcol = (delta >  2.0f) ? COL_RED
-                          : (delta < -2.0f) ? COL_TEAL : COL_MUTED;
+            fb_str((FB_W - aw) / 2, CY + 44, air,  COL_ACCENT, 2);
+            uint16_t wcol = (delta >  2.0f) ? COL_ALERT
+                          : (delta < -2.0f) ? COL_ACCENT : COL_MUTED;
             fb_str((FB_W - ww) / 2, CY + 60, wind, wcol, 2);
         }
 
         if (s->hr_bpm > 0) {
             char hr[6];
             snprintf(hr, sizeof(hr), "%d", s->hr_bpm);
-            fb_str(FB_W - (int)strlen(hr) * 12 - 4, 8, hr, COL_RED, 2);
+            fb_str(FB_W - (int)strlen(hr) * 12 - 4, 8, hr, COL_ALERT, 2);
             fb_str(FB_W - 24, 24, "bpm", COL_MUTED, 2);
         }
 
@@ -700,15 +689,15 @@ switch (g_screen) {
             int bx = (FB_W - (3*BW + 2*GAP)) / 2;
 
             struct { uint8_t pct; uint16_t col; const char *lbl; } bars[3] = {
-                {pa, COL_RED,   "Aero"},
-                {pr, COL_TEAL,  "Roll"},
+                {pa, COL_POWER, "Aero"},
+                {pr, COL_ACCENT,  "Roll"},
                 {po, COL_MUTED, "Other"},
             };
             for (int b = 0; b < 3; b++) {
                 int filled = BH * bars[b].pct / 100;
                 for (int y = BY; y < BY + BH; y++)
                     for (int x = bx; x < bx + BW; x++)
-                        if (x>=0&&x<FB_W&&y>=0&&y<FB_H) PX(x,y) = COL_SURFACE;
+                        if (x>=0&&x<FB_W&&y>=0&&y<FB_H) PX(x,y) = COL_TRACK;
                 for (int y = BY + BH - filled; y < BY + BH; y++)
                     for (int x = bx; x < bx + BW; x++)
                         if (x>=0&&x<FB_W&&y>=0&&y<FB_H) PX(x,y) = bars[b].col;
@@ -735,10 +724,10 @@ switch (g_screen) {
         char buf[20];
 
         // Grid dividers
-        fb_hline(0, FB_W - 1, 159, COL_SURFACE);
-        fb_hline(0, FB_W - 1, 160, COL_SURFACE);
+        fb_hline(0, FB_W - 1, 159, COL_PANEL);
+        fb_hline(0, FB_W - 1, 160, COL_PANEL);
         for (int y = 0; y < FB_H; y++)
-            if (y >= 0 && y < FB_H) { PX(119,y) = COL_SURFACE; PX(120,y) = COL_SURFACE; }
+            if (y >= 0 && y < FB_H) { PX(119,y) = COL_PANEL; PX(120,y) = COL_PANEL; }
 
         // TL — CdA
         {
@@ -747,8 +736,8 @@ switch (g_screen) {
             float    cpct = cda_valid ? (cda_val - 0.18f) / 0.20f : 0.0f;
             if (cpct < 0.0f) cpct = 0.0f;
             if (cpct > 1.0f) cpct = 1.0f;
-            uint16_t cda_col = (cpct < 0.33f) ? COL_TEAL
-                             : (cpct < 0.67f) ? COL_AMBER : COL_RED;
+            uint16_t cda_col = (cpct < 0.33f) ? COL_ACCENT
+                             : (cpct < 0.67f) ? COL_POWER : COL_ALERT;
             if (!cda_valid) cda_col = COL_MUTED;
 
             fb_str(10, 10, "CdA", COL_MUTED, 2);
@@ -764,7 +753,7 @@ switch (g_screen) {
         // TR — Heart Rate
         fb_str(130, 10, "HR", COL_MUTED, 2);
         {
-            uint16_t hr_col = s->hr_bpm > 0 ? COL_RED : COL_MUTED;
+            uint16_t hr_col = s->hr_bpm > 0 ? COL_ALERT : COL_MUTED;
             snprintf(buf, sizeof(buf), "%d", s->hr_bpm > 0 ? s->hr_bpm : 0);
             fb_str(130, 28, buf, hr_col, 4);
             fb_str(130, 64, "bpm", COL_MUTED, 2);
@@ -774,7 +763,7 @@ switch (g_screen) {
         // BL — Cadence
         fb_str(10, 172, "Cadence", COL_MUTED, 2);
         {
-            uint16_t cad_col = s->cadence_rpm > 0 ? COL_AMBER : COL_MUTED;
+            uint16_t cad_col = s->cadence_rpm > 0 ? COL_POWER : COL_MUTED;
             snprintf(buf, sizeof(buf), "%d", s->cadence_rpm > 0 ? s->cadence_rpm : 0);
             fb_str(10, 190, buf, cad_col, 4);
             fb_str(10, 226, "rpm", COL_MUTED, 2);
@@ -791,7 +780,7 @@ switch (g_screen) {
                 const char *zn = power_zone_name(s->power_w, g_rider_ftp_w);
                 fb_str(130, 250, zn, pwr_col, 1);
             }
-            fb_circle(195, 295, 4, s->ant_valid ? COL_TEAL : COL_MUTED);
+            fb_circle(195, 295, 4, s->ant_valid ? COL_ACCENT : COL_MUTED);
         }
         break;
     }
@@ -809,12 +798,12 @@ switch (g_screen) {
             for (int yy = by - 2; yy < by + box_h + 2; yy++)
                 for (int xx = bx - 2; xx < bx + box_w + 2; xx++)
                     if (xx >= 0 && xx < FB_W && yy >= 0 && yy < FB_H)
-                        PX(xx, yy) = COL_TEAL;
+                        PX(xx, yy) = COL_ACCENT;
             for (int yy = by; yy < by + box_h; yy++)
                 for (int xx = bx; xx < bx + box_w; xx++)
                     if (xx >= 0 && xx < FB_W && yy >= 0 && yy < FB_H)
                         PX(xx, yy) = COL_BG;
-            fb_str((FB_W - msg_w) / 2, by + 8, g_toast_msg, COL_TEAL, 2);
+            fb_str((FB_W - msg_w) / 2, by + 8, g_toast_msg, COL_ACCENT, 2);
         }
     }
     display_flush();
