@@ -1,11 +1,18 @@
 # AeroDrag — Interface Contract
 
 ```
-contract: v0.2.3
+contract: v0.3.0 (draft)
 owner:    aerodrag-firmware (questa repo è la fonte di verità unica)
-status:   ratified
-date:     2026-06-20
+status:   draft — Fase 1: recisione del live app↔pi. Da validare e ratificare.
+date:     2026-06-21
 ```
+
+> ⚠️ **BOZZA (v0.3.0, Fase 1).** Questa revisione **recide il legame live diretto
+> app↔Pi**: il telefono resta **solo-BLE** verso il proprio ESP32 (così non lascia
+> la rete internet), e l'**ESP32 diventa l'uplink WiFi primario** verso il Pi. È un
+> cambiamento di **ruolo/architettura**, non solo di payload. Resta `draft` finché
+> non è validata; le repo figlie **non** implementano prima della ratifica.
+> Vedi changelog v0.3.0 (§9) e il **Confine H riservato** (§7) per il cloud (Fase 2).
 
 Questo documento è l'**unica fonte di verità** per le interfacce fra i quattro
 componenti AeroDrag. Le repo figlie **implementano** questo contratto, non lo
@@ -23,32 +30,36 @@ SemVer del contratto:
 ## 1. Architettura e confini
 
 ```
-   FIRMWARE (ESP32-S3, C)
+   FIRMWARE (ESP32-S3, C) — gateway/uplink di ogni atleta
    sensori Pitot+IMU+ANT/BLE central, calcola CdA (verità del CdA)
-        │                                   │
-   (A) BLE GATT 0xAA00                  (B) WiFi WebSocket /device
-   binario LE, 10 Hz                    JSON, 2 Hz
-        ▼                                   ▼
-   NEW (app TS, Expo)  ──(C) WS /coach──►  PI (gateway JS)
-   engine.ts = solo       JSON 2 Hz ↑      server.js :8080
-   fallback/sim           cmd ↓            - /device (da firmware)
-        ▲                                  - /coach  (frames+eventi+cmd)
-        │ (F) schema condiviso             - /api/sessions, /status (REST)
-        │ (frame + sessione)               - /fw.bin (OTA)
-        ▼                                       │
+        │                                        │
+   (A) BLE GATT 0xAA00                       (B) WiFi WS /device  ◄─ UPLINK PRIMARIO
+   binario LE, 10 Hz                         JSON 2 Hz ↑ ; cmd coach ↓
+   + COACH_LINK 0xaa0f (cmd/stato coach → app)     │ (relay → app via 0xaa0f)
+        ▼                                          ▼
+   NEW (app TS, Expo)                          PI (gateway JS) server.js :8080
+   SOLO BLE verso il proprio ESP32             - /device (firmware: telemetria + cmd)
+   (mantiene la rete internet del telefono)    - /coach  (app: DEPRECATO → §3)
+        ╎                                       - /api/sessions, /status (REST)
+        ╎ (C) WS /coach — DEPRECATO             - /fw.bin (OTA)
+        ╎ fallback legacy, non più primario          │
+                                                      │
    COACH (Electron JS)  ◄──(E) HTTP POST /receive :8081── (sessione JSON)
    pc-receiver :8081, dashboard
+
+   (H) client ↔ cloud — RISERVATO (Fase 2, §7): archivio canonico. NON implementato.
 ```
 
 | # | Confine | Trasporto | Sezione |
 |---|---------|-----------|---------|
-| A | firmware → new | BLE GATT (svc `0xAA00`) | §2 |
-| B | firmware → pi | WebSocket `/device` (JSON) | §3 |
-| C | new → pi | WebSocket `/coach` (JSON) | §3 |
-| D | pi → new / pi → coach | WebSocket `/coach` (cmd + eventi) | §4 |
+| A | firmware → new | BLE GATT (svc `0xAA00`) — **app solo-BLE** | §2 |
+| B | firmware → pi | WebSocket `/device` (JSON) — **uplink primario** | §3 |
+| C | ~~new → pi~~ | ~~WebSocket `/coach`~~ — **DEPRECATO** (fallback legacy) | §3 |
+| D | pi → new / pi → coach | cmd a new **via firmware** (`0xaa0f`); eventi a coach su `/coach` | §4 |
 | E | pi → coach | HTTP `/receive` :8081 (sessione) | §5 |
 | F | coach ↔ new | schema dati condiviso | §5 |
 | G | firmware ↔ wheel | BLE GATT (svc `0xBB00`) | §2 |
+| H | client ↔ cloud | REST autenticato — **RISERVATO**, non implementato | §7 |
 
 Componente gestito aggiuntivo: **`wheel-fw/`** (firmware sensore ruota Crr,
 nRF52840) — repo figlia che vive nella repo madre, vedi confine G.
@@ -79,6 +90,7 @@ MTU richiesto ≥ 53 (si negozia 185): PHYSICS=28 B, READ IDENTITY=50 B.
 | WHEEL_STREAM | `aa0c` | N | 10 Hz | 16 | `float speedMs, accelMs2, tempC, vibRMS` — relay dei dati grezzi del sensore ruota durante la calibrazione Crr |
 | WHEEL_CMD | `aa0d` | W | on-demand | 1 | `uint8` comando coast-down: 0x01 indoor, 0x02 outdoor-A, 0x03 outdoor-B, 0xFF cancel → inoltrato dal firmware al sensore ruota |
 | SENSOR_SCAN | `aa0e` | W+N | on-pair | var | **W** 1B: 0x01 start / 0x00 stop discovery. **N** (1 entry per sensore scoperto): `uint8 type` + `uint8 mac[6]` + `int8 rssi` + `uint8 nameLen` + `char name[nameLen]` |
+| COACH_LINK | `aa0f` | N | event-driven | 2 | **(v0.3.0)** relay coach→app: `uint8 type` + `uint8 arg`. Il firmware inoltra all'app i comandi/stato coach ricevuti sul suo `/device`. Vedi sotto |
 
 ### Vincoli `CONFIG` (0xaa08)
 - **12 byte**: `massKg`∈[33,200], `crr`∈[0.001,0.025], `wheelCircM`∈[1.0,2.5].
@@ -138,6 +150,27 @@ bici vicine; il firmware resta l'unica fonte di verità).
   dall'app e scritto in `CONFIG`. Né `crr` né `wheelCircM` transitano da
   `WHEEL_STREAM`: lì passano **solo** i dati grezzi.
 
+### Coach link `COACH_LINK` (0xaa0f) — relay coach→app (v0.3.0)
+Con la **recisione del live app↔Pi** (§3) il telefono non è più connesso al `/coach`
+del Pi: non riceverebbe quindi i comandi/lo stato del coach. Il firmware — che è già
+connesso al Pi su `/device` e **riceve già** i comandi `start`/`stop`/`lap` (§4) — li
+**inoltra all'app** via NOTIFY su `0xaa0f`. Payload **2 byte**: `uint8 type` + `uint8 arg`.
+
+| `type` | significato | `arg` |
+|--------|-------------|-------|
+| `0x01` | cmd **start** sessione | 0 |
+| `0x02` | cmd **stop** sessione  | 0 |
+| `0x03` | cmd **lap**            | `lapNum` (uint8, 0 = auto/sconosciuto) |
+| `0x10` | **coach connesso** (un coach sta osservando/registrando) | 0 |
+| `0x11` | **coach disconnesso** | 0 |
+| `0x12` | **stato registrazione** | 0 = off, 1 = on |
+
+L'app usa questi eventi per segmentare la **propria** registrazione locale (che poi
+verrà caricata sul cloud, §7) e per mostrare lo stato "REC"/coach. La fonte di verità
+della sessione registrata dal coach resta il Pi (dai frame `/device`). Eventi
+sconosciuti → ignorati (forward-compat). L'app **non** invia comandi al coach su BLE:
+le azioni atleta (es. lap manuale) passano dal firmware, che è il device comandato.
+
 #### Ordine byte del MAC in `0xaa0b`/`0xaa0e` (seam firmware↔new) — (v0.2.3)
 In `SENSOR_WHITELIST` (0xaa0b) e nelle notifiche `SENSOR_SCAN` (0xaa0e) il campo
 `uint8 mac[6]` è in **ordine di visualizzazione** (display order): `mac[0]` = primo
@@ -166,8 +199,25 @@ sono nello stesso repo madre, ma restano firmware distinti) e dalla ratifica qui
 
 ## 3. Confini B/C — frame di telemetria (firmware/app → pi, WebSocket)
 
-Endpoint device→pi: `ws://192.168.8.1:8080/device`.
-Endpoint app→pi (coach): `ws://<pi>:8080/coach`.
+Endpoint device→pi: `ws://192.168.8.1:8080/device` — **uplink primario**.
+Endpoint app→pi (coach): `ws://<pi>:8080/coach` — **DEPRECATO** (v0.3.0).
+
+> **Recisione del live app↔Pi (v0.3.0).** Il produttore primario di telemetria è
+> l'**ESP32 su `/device`** (confine B). L'app (`aerodrag-new`) **non** si connette
+> più al `/coach` del Pi per lo streaming live: resta **solo-BLE** verso il proprio
+> ESP32 (così il telefono non deve unirsi all'AP del Pi e conserva la sua rete
+> internet). Il confine **C** (`new → pi /coach`) è **deprecato**: il Pi può
+> continuare ad accettarlo come **fallback legacy** (es. app in sim senza ESP32),
+> ma non è più il percorso atteso e sarà rimosso in un MAJOR. I comandi del coach
+> raggiungono l'app **via firmware** (`COACH_LINK 0xaa0f`, §2/§4), non più sul
+> `/coach`.
+>
+> **Forward-compat — dato grezzo (Fase 3, biomeccanica/AI).** La **sorgente del
+> dato ad alta frequenza è l'ESP32**. Il frame di rete a 2 Hz e il campionamento
+> del Pi (1 pt ogni 5 frame) sono una **vista decimata per la dashboard**: NON
+> sono da considerare l'unica forma archiviabile. L'archivio canonico (cloud, §7)
+> dovrà poter preservare il dato grezzo/timestampato per l'analisi futura; il
+> contratto **non** vincola l'archivio alla forma decimata.
 
 **Handshake** (alla connessione):
 ```json
@@ -254,6 +304,14 @@ più il **frame live** (oggetto §3 senza `type`, con `serverTs` aggiunto dal Pi
 **REST** (coach dashboard): `GET /status`, `GET /api/sessions`,
 `GET /api/sessions/{id}`, `GET /fw.bin`.
 
+> **Instradamento comandi all'app (v0.3.0).** Con l'app non più su `/coach`, i
+> comandi diretti all'**atleta** (`start`/`stop`/`lap`) raggiungono l'app **via
+> firmware**: il Pi li invia al device su `/device` (come già fa), e il firmware li
+> **inoltra in BLE** su `COACH_LINK 0xaa0f` (§2). Gli **eventi** verso il **coach**
+> (dashboard) restano su `/coach` invariati. `ota` resta diretto al device. Se è
+> attivo il fallback legacy `/coach` per l'app (sim), su quella connessione valgono
+> ancora le regole pre-v0.3.0.
+
 ---
 
 ## 5. Confini E/F — sessione persistita (pi → coach, schema condiviso con new)
@@ -321,7 +379,46 @@ Costanti: `g = 9.80665`, `RHO_STD = 1.225`, CdA valido in `[0.10, 0.60]` (device
 
 ---
 
-## 7. Versioni componenti (al contratto v0.1.0)
+## 7. Confine H — client ↔ cloud (RISERVATO, non implementato) — Fase 2
+
+> **Stato: RISERVATO.** Confine **documentato ma non implementato**. Nessun client lo
+> usa ancora; è qui per fissare la direzione ed evitare scelte che lo precludano. La
+> spec di dettaglio (auth, schema, endpoint) sarà ratificata quando si costruisce il
+> backend (Fase 2). Niente codice finché non è promosso da `riservato` a `ratified`.
+
+**Scopo.** Il **cloud è l'archivio canonico** delle sessioni (verità di lungo
+periodo). Con il cloud, il backfill "scarica i dati mancanti da ovunque" è
+**client↔cloud**, non più un legame diretto app↔Pi sulla LAN: ogni client (app,
+coach) sincronizza col cloud quando ha internet. Questo **sostituisce** il fallback
+LAN app↔Pi che altrimenti sarebbe servito.
+
+**Principi (vincolanti per il disegno futuro):**
+- **Trasporto**: REST/HTTPS, **autenticato** (token derivato dall'identità/pairing).
+  Non WebSocket: è riconciliazione asincrona, non streaming.
+- **Sessioni immutabili**, **upsert idempotente per `sessionId`** (`session_{ts}_{deviceHex}`):
+  chi non ha una sessione la prende; chi ce l'ha non la sovrascrive → niente conflitti,
+  niente merge a metà sessione.
+- **Pull a delta** (`since` timestamp); upload bidirezionale (app **e** coach possono
+  caricare; dedup per id).
+- **Identità atleta-centrica**: la chiave longitudinale è l'**atleta** (persona nel
+  tempo, su più device/sport); il MAC del device è **una** delle sorgenti mappate
+  all'atleta, non la chiave primaria. (Richiesto dall'analisi AI, Fase 3.)
+- **Schema a canali versionato ed estensibile** (non colonne fisse): l'aggiunta di
+  modalità nuove (es. **biomeccanica**: IMU multipli, forza ai pedali, angoli
+  articolari) = nuovi canali, **senza** rompere il contratto. Aero e biomeccanica
+  condividono un **timebase allineato**.
+- **Privacy/consenso**: dati biomeccanici/health-adjacent → ownership e consenso
+  previsti **dall'inizio** (GDPR; possibili dati sensibili).
+- **Naming**: per non collidere col "sync" Pi→PC esistente (§4), il cloud usa termini
+  distinti (es. *cloud push/pull*, *archive*).
+
+**Fase 3 (oltre H).** Il cloud è la base per l'**AI coach** (aerodinamica **e**
+biomeccanica), che è un **consumatore** dell'archivio canonico: richiede il dato
+grezzo ad alta frequenza (vedi forward-compat in §3) e l'identità atleta-centrica.
+
+---
+
+## 8. Versioni componenti (al contratto v0.1.0)
 
 | Componente | Versione |
 |-----------|----------|
@@ -335,7 +432,26 @@ Costanti: `g = 9.80665`, `RHO_STD = 1.225`, CdA valido in `[0.10, 0.60]` (device
 
 ---
 
-## 8. Changelog
+## 9. Changelog
+
+### v0.3.0 (draft) — 2026-06-21
+**Recisione del live app↔Pi + uplink ESP32 primario** (cambiamento di ruolo/architettura →
+MINOR con deprecazione; bozza, da ratificare). Decisione dell'owner del progetto.
+- **App solo-BLE**: `aerodrag-new` non si connette più al `/coach` del Pi per il live;
+  resta in BLE verso il proprio ESP32 e **conserva la rete internet** del telefono.
+- **ESP32 = uplink primario** verso il Pi (`/device`, confine B). Già implementato lato
+  firmware/Pi: cambia il *ruolo*, non il payload dei frame (§3 invariato).
+- **Confine C (`new → pi /coach`) DEPRECATO** → fallback legacy (app in sim senza ESP32);
+  rimozione in un MAJOR futuro.
+- **Nuova `COACH_LINK 0xaa0f`** (§2): il firmware inoltra all'app i comandi/stato coach
+  (`start`/`stop`/`lap`, coach connesso, stato REC) ricevuti sul `/device`. I comandi
+  all'atleta non passano più dal `/coach` dell'app (§4).
+- **Confine H riservato** (§7): cloud come **archivio canonico** (Fase 2), che sostituisce
+  ogni fallback LAN app↔Pi. Note di **forward-compat** (§3): la sorgente del dato grezzo
+  ad alta frequenza è l'ESP32; l'archivio non è vincolato alla vista decimata (Fase 3:
+  biomeccanica + AI coach).
+- Nessuna modifica al payload dei frame (§3), allo schema sessione (§5) o al modello
+  fisico (§6).
 
 ### v0.2.3 — 2026-06-20
 Chiarimenti (PATCH, nessuna modifica al wire) dall'audit bug cross-repo.
