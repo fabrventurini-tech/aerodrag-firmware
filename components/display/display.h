@@ -15,6 +15,7 @@
 #include "board_pins.h"
 #include "aerodrag_types.h"
 #include "qrcodegen.h"
+#include "aafont_data.h"
 #include <stdio.h>
 #include <math.h>
 #include <string.h>
@@ -203,123 +204,100 @@ static void fb_hline(int x0, int x1, int y, uint16_t col)
     for (int x=x0; x<=x1; x++) if (x>=0&&x<FB_W) PX(x,y)=col;
 }
 
-// ─── 5×7 pixel font — full ASCII printable (0x20–0x7E) ───────────────────────
-static const uint8_t FONT5X7[][5] = {
-    {0x00,0x00,0x00,0x00,0x00}, // ' '
-    {0x00,0x00,0x5F,0x00,0x00}, // '!'
-    {0x00,0x07,0x00,0x07,0x00}, // '"'
-    {0x14,0x7F,0x14,0x7F,0x14}, // '#'
-    {0x24,0x2A,0x7F,0x2A,0x12}, // '$'
-    {0x23,0x13,0x08,0x64,0x62}, // '%'
-    {0x36,0x49,0x55,0x22,0x50}, // '&'
-    {0x00,0x05,0x03,0x00,0x00}, // '\''
-    {0x00,0x1C,0x22,0x41,0x00}, // '('
-    {0x00,0x41,0x22,0x1C,0x00}, // ')'
-    {0x14,0x08,0x3E,0x08,0x14}, // '*'
-    {0x08,0x08,0x3E,0x08,0x08}, // '+'
-    {0x00,0x50,0x30,0x00,0x00}, // ','
-    {0x08,0x08,0x08,0x08,0x08}, // '-'
-    {0x00,0x60,0x60,0x00,0x00}, // '.'
-    {0x20,0x10,0x08,0x04,0x02}, // '/'
-    {0x3E,0x51,0x49,0x45,0x3E}, // '0'
-    {0x00,0x42,0x7F,0x40,0x00}, // '1'
-    {0x42,0x61,0x51,0x49,0x46}, // '2'
-    {0x21,0x41,0x45,0x4B,0x31}, // '3'
-    {0x18,0x14,0x12,0x7F,0x10}, // '4'
-    {0x27,0x45,0x45,0x45,0x39}, // '5'
-    {0x3C,0x4A,0x49,0x49,0x30}, // '6'
-    {0x01,0x71,0x09,0x05,0x03}, // '7'
-    {0x36,0x49,0x49,0x49,0x36}, // '8'
-    {0x06,0x49,0x49,0x29,0x1E}, // '9'
-    {0x00,0x36,0x36,0x00,0x00}, // ':'
-    {0x00,0x56,0x36,0x00,0x00}, // ';'
-    {0x08,0x14,0x22,0x41,0x00}, // '<'
-    {0x14,0x14,0x14,0x14,0x14}, // '='
-    {0x00,0x41,0x22,0x14,0x08}, // '>'
-    {0x02,0x01,0x51,0x09,0x06}, // '?'
-    {0x32,0x49,0x79,0x41,0x3E}, // '@'
-    {0x7E,0x11,0x11,0x11,0x7E}, // 'A'
-    {0x7F,0x49,0x49,0x49,0x36}, // 'B'
-    {0x3E,0x41,0x41,0x41,0x22}, // 'C'
-    {0x7F,0x41,0x41,0x22,0x1C}, // 'D'
-    {0x7F,0x49,0x49,0x49,0x41}, // 'E'
-    {0x7F,0x09,0x09,0x09,0x01}, // 'F'
-    {0x3E,0x41,0x49,0x49,0x7A}, // 'G'
-    {0x7F,0x08,0x08,0x08,0x7F}, // 'H'
-    {0x00,0x41,0x7F,0x41,0x00}, // 'I'
-    {0x20,0x40,0x41,0x3F,0x01}, // 'J'
-    {0x7F,0x08,0x14,0x22,0x41}, // 'K'
-    {0x7F,0x40,0x40,0x40,0x40}, // 'L'
-    {0x7F,0x02,0x04,0x02,0x7F}, // 'M'
-    {0x7F,0x04,0x08,0x10,0x7F}, // 'N'
-    {0x3E,0x41,0x41,0x41,0x3E}, // 'O'
-    {0x7F,0x09,0x09,0x09,0x06}, // 'P'
-    {0x3E,0x41,0x51,0x21,0x5E}, // 'Q'
-    {0x7F,0x09,0x19,0x29,0x46}, // 'R'
-    {0x46,0x49,0x49,0x49,0x31}, // 'S'
-    {0x01,0x01,0x7F,0x01,0x01}, // 'T'
-    {0x3F,0x40,0x40,0x40,0x3F}, // 'U'
-    {0x1F,0x20,0x40,0x20,0x1F}, // 'V'
-    {0x3F,0x40,0x38,0x40,0x3F}, // 'W'
-    {0x63,0x14,0x08,0x14,0x63}, // 'X'
-    {0x07,0x08,0x70,0x08,0x07}, // 'Y'
-    {0x61,0x51,0x49,0x45,0x43}, // 'Z'
-    {0x00,0x7F,0x41,0x41,0x00}, // '['
-    {0x02,0x04,0x08,0x10,0x20}, // '\'
-    {0x00,0x41,0x41,0x7F,0x00}, // ']'
-    {0x04,0x02,0x01,0x02,0x04}, // '^'
-    {0x40,0x40,0x40,0x40,0x40}, // '_'
-    {0x00,0x01,0x02,0x04,0x00}, // '`'
-    {0x20,0x54,0x54,0x54,0x78}, // 'a'
-    {0x7F,0x48,0x44,0x44,0x38}, // 'b'
-    {0x38,0x44,0x44,0x44,0x20}, // 'c'
-    {0x38,0x44,0x44,0x48,0x7F}, // 'd'
-    {0x38,0x54,0x54,0x54,0x18}, // 'e'
-    {0x08,0x7E,0x09,0x01,0x02}, // 'f'
-    {0x0C,0x52,0x52,0x52,0x3E}, // 'g'
-    {0x7F,0x08,0x04,0x04,0x78}, // 'h'
-    {0x00,0x44,0x7D,0x40,0x00}, // 'i'
-    {0x20,0x40,0x44,0x3D,0x00}, // 'j'
-    {0x7F,0x10,0x28,0x44,0x00}, // 'k'
-    {0x00,0x41,0x7F,0x40,0x00}, // 'l'
-    {0x7C,0x04,0x18,0x04,0x78}, // 'm'
-    {0x7C,0x08,0x04,0x04,0x78}, // 'n'
-    {0x38,0x44,0x44,0x44,0x38}, // 'o'
-    {0x7C,0x14,0x14,0x14,0x08}, // 'p'
-    {0x08,0x14,0x14,0x18,0x7C}, // 'q'
-    {0x7C,0x08,0x04,0x04,0x08}, // 'r'
-    {0x48,0x54,0x54,0x54,0x20}, // 's'
-    {0x04,0x3F,0x44,0x40,0x20}, // 't'
-    {0x3C,0x40,0x40,0x40,0x7C}, // 'u'
-    {0x1C,0x20,0x40,0x20,0x1C}, // 'v'
-    {0x3C,0x40,0x30,0x40,0x3C}, // 'w'
-    {0x44,0x28,0x10,0x28,0x44}, // 'x'
-    {0x0C,0x50,0x50,0x50,0x3C}, // 'y'
-    {0x44,0x64,0x54,0x4C,0x44}, // 'z'
-    {0x00,0x08,0x36,0x41,0x00}, // '{'
-    {0x00,0x00,0x7F,0x00,0x00}, // '|'
-    {0x00,0x41,0x36,0x08,0x00}, // '}'
-    {0x10,0x08,0x08,0x10,0x08}, // '~'
-};
+// ─── Font anti-aliased (atlanti pre-rasterizzati in aafont_data.h) ───────────
+// JetBrains Mono (numeri) + Inter (label/unità). Testo in alpha-blend RGB565.
+// Famiglie disponibili: AAF_HERO(46) AAF_GRADE(48,ExtraBold) AAF_VAL(34)
+//                       AAF_MED(26) AAF_NUMS(14) AAF_LABEL(13) AAF_LBLS(11)
 
-static void fb_char(int x, int y, char c, uint16_t col, int scale)
+static const aaglyph_t *aaf_glyph(const aafont_t *f, uint16_t cp)
 {
-    if (c < 0x20 || c > 0x7E) return;
-    int idx = c - 0x20;
-    for (int row = 0; row < 7; row++)
-    for (int col_b = 0; col_b < 5; col_b++) {
-        if (!((FONT5X7[idx][col_b] >> row) & 1)) continue;
-        for (int sy = 0; sy < scale; sy++)
-        for (int sx = 0; sx < scale; sx++) {
-            int px = x + col_b*scale + sx, py = y + row*scale + sy;
-            if (px>=0 && px<FB_W && py>=0 && py<FB_H) PX(px,py) = col;
-        }
-    }
+    for (uint16_t i = 0; i < f->n; i++) if (f->g[i].cp == cp) return &f->g[i];
+    return NULL;
 }
 
-static void fb_str(int x, int y, const char *s, uint16_t col, int scale)
+// UTF-8 minimale: ASCII + 2 byte (² ° ·). Avanza *s, ritorna il codepoint.
+static uint16_t utf8_next(const char **s)
 {
-    while (*s) { fb_char(x, y, *s++, col, scale); x += (5+1)*scale; }
+    const unsigned char *p = (const unsigned char *)*s;
+    uint16_t cp = *p;
+    if (cp < 0x80)                      { *s += 1; return cp; }
+    if ((cp & 0xE0) == 0xC0 && p[1])    { cp = ((cp & 0x1F) << 6) | (p[1] & 0x3F); *s += 2; return cp; }
+    *s += 1; return cp;
+}
+
+// Alpha-blend di fg su bg (RGB565 nativo, non byte-swapped).
+static inline uint16_t blend565(uint16_t bg, uint16_t fg, uint8_t a)
+{
+    if (a == 0)   return bg;
+    if (a >= 255) return fg;
+    uint32_t br = (bg >> 11) & 0x1F, bgc = (bg >> 5) & 0x3F, bb = bg & 0x1F;
+    uint32_t fr = (fg >> 11) & 0x1F, fgc = (fg >> 5) & 0x3F, fb = fg & 0x1F;
+    uint32_t ia = 255 - a;
+    uint32_t r = (fr * a + br * ia) / 255;
+    uint32_t g = (fgc * a + bgc * ia) / 255;
+    uint32_t b = (fb * a + bb * ia) / 255;
+    return (uint16_t)((r << 11) | (g << 5) | b);
+}
+
+static int aaf_text_w(const aafont_t *f, const char *s)
+{
+    int w = 0;
+    while (*s) { uint16_t cp = utf8_next(&s); const aaglyph_t *g = aaf_glyph(f, cp); if (g) w += g->adv; }
+    return w;
+}
+
+// estensione verticale dell'inchiostro (per il centraggio robusto dei valori)
+static void aaf_ink_v(const aafont_t *f, const char *s, int *top, int *bot)
+{
+    int t = 999, b = -999;
+    while (*s) {
+        uint16_t cp = utf8_next(&s);
+        const aaglyph_t *g = aaf_glyph(f, cp);
+        if (!g || g->h == 0) continue;
+        if (g->yoff < t)         t = g->yoff;
+        if (g->yoff + g->h > b)  b = g->yoff + g->h;
+    }
+    if (t > 900) { t = 0; b = 0; }
+    *top = t; *bot = b;
+}
+
+// y = riga ascender (top). Ritorna la x avanzata.
+static int fb_text(int x, int y, const char *s, const aafont_t *f, uint16_t col)
+{
+    while (*s) {
+        uint16_t cp = utf8_next(&s);
+        const aaglyph_t *g = aaf_glyph(f, cp);
+        if (!g) continue;
+        const uint8_t *bm = f->bm + g->off;
+        for (int gy = 0; gy < g->h; gy++) {
+            int py = y + g->yoff + gy;
+            if (py < 0 || py >= FB_H) continue;
+            const uint8_t *row = bm + gy * g->w;
+            for (int gx = 0; gx < g->w; gx++) {
+                uint8_t a = row[gx];
+                if (!a) continue;
+                int px = x + g->xoff + gx;
+                if (px < 0 || px >= FB_W) continue;
+                uint16_t *d = &PX(px, py);
+                *d = blend565(*d, col, a);
+            }
+        }
+        x += g->adv;
+    }
+    return x;
+}
+
+static void fb_text_cx(int cx, int y, const char *s, const aafont_t *f, uint16_t col)
+{ fb_text(cx - aaf_text_w(f, s) / 2, y, s, f, col); }
+
+static void fb_text_r(int xr, int y, const char *s, const aafont_t *f, uint16_t col)
+{ fb_text(xr - aaf_text_w(f, s), y, s, f, col); }
+
+// Centra l'inchiostro della stringa su (cx,cy) — per i valori "hero".
+static void fb_text_center(int cx, int cy, const char *s, const aafont_t *f, uint16_t col)
+{
+    int top, bot; aaf_ink_v(f, s, &top, &bot);
+    fb_text(cx - aaf_text_w(f, s) / 2, cy - (top + bot) / 2, s, f, col);
 }
 
 // ─── QR pairing state ────────────────────────────────────────────────────────
@@ -415,29 +393,33 @@ static void fb_battery(int x, int y, uint8_t pct, uint16_t col)
     }
 }
 
-// ─── Status dots (4×, bottom-right): WiFi BLE ANT+ Pitot ─────────────────────
+// ─── Status dots (4×, riga dedicata centrata in basso): WiFi BLE ANT+ Pitot ──
 static void render_status_dots(const aerodrag_sensors_t *s)
 {
-    struct { int x; uint16_t col; char lbl; } dots[4] = {
-        { FB_W - 35, g_wifi_ready    ? COL_ACCENT : COL_MUTED, 'W' },
-        { FB_W - 26, g_ble_connected ? COL_ACCENT : COL_MUTED, 'B' },
-        { FB_W - 17, s->ant_valid    ? COL_ACCENT : COL_MUTED, 'A' },
-        { FB_W -  8, s->pitot_valid  ? COL_ACCENT : COL_MUTED, 'P' },
+    struct { uint16_t col; const char *lbl; } dots[4] = {
+        { g_wifi_ready    ? COL_ACCENT : COL_MUTED, "W" },
+        { g_ble_connected ? COL_ACCENT : COL_MUTED, "B" },
+        { s->ant_valid    ? COL_ACCENT : COL_MUTED, "A" },
+        { s->pitot_valid  ? COL_ACCENT : COL_MUTED, "P" },
     };
+    const int STEP = 30;                       // passo per item (dot + lettera)
+    int x0 = FB_W / 2 - (STEP * 4 - 12) / 2;    // riga centrata
+    int dy = FB_H - 9;                          // centro dei pallini
     for (int i = 0; i < 4; i++) {
-        fb_char(dots[i].x - 2, FB_H - 19, dots[i].lbl, COL_MUTED, 1);
-        fb_circle(dots[i].x,   FB_H -  8, 3, dots[i].col);
+        int dx = x0 + i * STEP;
+        fb_circle(dx, dy, 3, dots[i].col);
+        fb_text(dx + 7, FB_H - 16, dots[i].lbl, &AAF_LBLS, COL_MUTED);
     }
 }
 
-// ─── MM:SS helper ─────────────────────────────────────────────────────────────
-static void fb_time(int x, int y, uint32_t secs, uint16_t col, int scale)
+// ─── MM:SS helper (centrato su cx, top y) ─────────────────────────────────────
+static void fb_time_cx(int cx, int y, uint32_t secs, uint16_t col, const aafont_t *f)
 {
     char buf[6];
     uint32_t mm = secs / 60;
     if (mm > 99) mm = 99;
     snprintf(buf, sizeof(buf), "%02lu:%02lu", (unsigned long)mm, (unsigned long)(secs % 60));
-    fb_str(x, y, buf, col, scale);
+    fb_text_cx(cx, y, buf, f, col);
 }
 
 // ─── Screen state ─────────────────────────────────────────────────────────────
@@ -458,19 +440,26 @@ switch (g_screen) {
 
     // ── Pairing ───────────────────────────────────────────────────────────────
     case SCR_PAIRING: {
+        uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000LL);
+
+        // Wordmark: anello accent + "AeroDrag"
+        fb_circle(CX - 52, 16, 5, COL_ACCENT);
+        fb_circle(CX - 52, 16, 2, COL_BG);
+        fb_text(CX - 42, 9, "AeroDrag", &AAF_LABEL, COL_ACCENT);
+        fb_text_cx(CX, 30, "Inquadra per associare", &AAF_LBLS, COL_MUTED);
+
         if (!g_qr_valid) {
-            int w = (int)strlen(g_pairing_id) * 6;
-            fb_str((FB_W - w) / 2, CY - 4, g_pairing_id, COL_ACCENT, 1);
+            fb_text_cx(CX, CY - 8, g_pairing_id, &AAF_LABEL, COL_ACCENT);
             break;
         }
         int sz  = qrcodegen_getSize(g_qr_cache);
-        const int SCALE = 7;
+        const int SCALE = 6;
         const int PAD   = 10;
         int qr_px  = sz * SCALE;
         int rect_w = qr_px + 2 * PAD;
         int rect_h = qr_px + 2 * PAD;
         int rx = (FB_W - rect_w) / 2;
-        int ry = 20;
+        int ry = 52;
         int ox = rx + PAD;
         int oy = ry + PAD;
 
@@ -491,15 +480,15 @@ switch (g_screen) {
             }
         }
 
-        {
-            int id_len = (int)strlen(g_pairing_id);
-            int id_w   = id_len * 6;
-            int id_x   = (FB_W - id_w) / 2;
-            int id_y   = ry + rect_h + 8;
-            fb_str(id_x, id_y, g_pairing_id, COL_TEXTDIM, 1);
-        }
+        fb_text_cx(CX, ry + rect_h + 10, g_pairing_id, &AAF_LABEL, COL_TEXTDIM);
 
-        fb_circle(CX, ry + rect_h + 30, 4, COL_ALERT);
+        // Stato "In attesa…" con dot lampeggiante
+        int sy = ry + rect_h + 34;
+        const char *wait = "In attesa...";
+        int ww = aaf_text_w(&AAF_LBLS, wait);
+        int wx = CX - (ww + 14) / 2;
+        if ((now_ms / 500) % 2 == 0) fb_circle(wx, sy + 5, 4, COL_ALERT);
+        fb_text(wx + 12, sy, wait, &AAF_LBLS, COL_TEXTDIM);
         break;
     }
 
@@ -534,62 +523,79 @@ switch (g_screen) {
             fb_arc(CX, CY, 110, 12, ba - 1.5f, ba + 1.5f, rgb(255,255,255));
         }
 
-        fb_str((FB_W - 36) / 2, 8, "CdA", COL_MUTED, 2);
-
-        // Grade (hero)
-        const char *grade     = valid ? cda_grade(cda) : "--";
-        uint16_t    grade_col = valid ? arc_col : COL_MUTED;
-        int gw = (int)strlen(grade) * 6 * 4;
-        fb_str((FB_W - gw) / 2, CY - 40, grade, grade_col, 4);
-
-        if (valid) {
-            char buf[8];
-            snprintf(buf, sizeof(buf), "0.%03d", (int)(cda * 1000) % 1000);
-            int vw = (int)strlen(buf) * 12;
-            fb_str((FB_W - vw) / 2, CY + 8, buf, COL_TEXT, 2);
-            fb_str(CX - 12, CY + 26, "m2", COL_MUTED, 2);
-        } else {
-            fb_str(CX - 18, CY + 8, "---", COL_MUTED, 2);
-        }
-
-        // "NEW BEST" blink
-        if (now_ms < g_best_flash_end && (now_ms / 500) % 2 == 0) {
-            int nbw = (int)strlen("NEW BEST") * 12;
-            fb_str((FB_W - nbw) / 2, CY + 44, "NEW BEST", COL_POSITIVE, 2);
-        }
-
-        // Bottom info bar: speed | wind | power
-        int bby = FB_H - 34;
-        if (valid && p->v_ground_ms > 0.5f) {
-            char spd[6];
-            snprintf(spd, sizeof(spd), "%d", (int)(p->v_ground_ms * 3.6f));
-            fb_str(8, bby, spd, COL_TEXT, 2);
-            fb_str(8 + (int)strlen(spd) * 12, bby + 8, "km/h", COL_MUTED, 2);
-        }
-        if (s->pitot_valid && s->pitot_pa > 0.3f) {
-            float v_air = sqrtf(2.0f * s->pitot_pa / 1.225f) * 3.6f;
-            char wa[6];
-            snprintf(wa, sizeof(wa), "%d", (int)v_air);
-            int wx = CX - (int)strlen(wa) * 6;
-            fb_str(wx, bby, wa, COL_ACCENT, 2);
-            fb_str(wx + (int)strlen(wa) * 12, bby + 8, "wind", COL_MUTED, 2);
-        }
-        if (s->power_w > 0) {
-            char pw[6];
-            snprintf(pw, sizeof(pw), "%d", s->power_w);
-            int px = FB_W - (int)strlen(pw) * 12 - 14;
-            fb_str(px, bby, pw, COL_POWER, 2);
-            fb_str(px + (int)strlen(pw) * 12, bby + 8, "W", COL_MUTED, 2);
-        }
-
-        // Battery icon top-right
+        // Header: "CdA" a sinistra, batteria a destra
+        fb_text(12, 8, "CdA", &AAF_LABEL, COL_MUTED);
         {
             uint16_t bat_col = s->battery_pct > 25 ? COL_ACCENT : COL_ALERT;
             char bat_str[6];
             snprintf(bat_str, sizeof(bat_str), "%d%%", s->battery_pct);
-            int bpw = (int)strlen(bat_str) * 12;
-            fb_str(FB_W - 24 - bpw - 3, 8, bat_str, bat_col, 2);
-            fb_battery(FB_W - 24, 8, s->battery_pct, bat_col);
+            fb_battery(FB_W - 26, 9, s->battery_pct, bat_col);
+            fb_text_r(FB_W - 30, 8, bat_str, &AAF_LABEL, bat_col);
+        }
+
+        // Grade (hero) + valore + unità, centrati nell'anello
+        const char *grade     = valid ? cda_grade(cda) : "--";
+        uint16_t    grade_col = valid ? arc_col : COL_MUTED;
+        fb_text_center(CX, CY - 30, grade, &AAF_GRADE, grade_col);
+
+        if (valid) {
+            char buf[8];
+            snprintf(buf, sizeof(buf), "0.%03d", (int)(cda * 1000) % 1000);
+            fb_text_center(CX, CY + 18, buf, &AAF_VAL, COL_TEXT);
+            fb_text_cx(CX, CY + 36, "m²", &AAF_LABEL, COL_MUTED);
+        } else {
+            fb_text_center(CX, CY + 18, "---", &AAF_VAL, COL_MUTED);
+        }
+
+        // Chip AERO (pctAero) sopra il divisore — NON dentro l'anello
+        if (valid) {
+            char num[6];
+            snprintf(num, sizeof(num), "%d", p->pct_aero);
+            int wl = aaf_text_w(&AAF_LBLS, "AERO ");
+            int wn = aaf_text_w(&AAF_MED, num);
+            int wp = aaf_text_w(&AAF_LBLS, "%");
+            int x  = CX - (wl + wn + wp) / 2;
+            fb_text(x, CY + 64, "AERO ", &AAF_LBLS, COL_MUTED);
+            x = fb_text(x + wl, CY + 60, num, &AAF_MED, COL_POWER);
+            fb_text(x, CY + 64, "%", &AAF_LBLS, COL_MUTED);
+        }
+
+        // Chip "▾ NEW BEST" lampeggiante (sopra il chip AERO)
+        if (now_ms < g_best_flash_end && (now_ms / 400) % 2 == 0) {
+            const char *nb = "NEW BEST";
+            int nbw = aaf_text_w(&AAF_LBLS, nb);
+            int nx  = CX - (nbw + 12) / 2;
+            // triangolino verso il basso
+            for (int dy = 0; dy < 5; dy++)
+                fb_hline(nx + dy, nx + 8 - dy, CY + 46 + dy, COL_POSITIVE);
+            fb_text(nx + 12, CY + 44, nb, &AAF_LBLS, COL_POSITIVE);
+        }
+
+        // Divisore
+        fb_hline(24, FB_W - 24, FB_H - 56, COL_PANEL);
+
+        // Barra inferiore: speed | wind | power  (numero JBMono + unità Inter)
+        int bvy = FB_H - 50, bly = FB_H - 30;
+        {
+            char spd[6] = "--";
+            if (valid && p->v_ground_ms > 0.5f) snprintf(spd, sizeof(spd), "%d", (int)(p->v_ground_ms * 3.6f));
+            fb_text_cx(52, bvy, spd, &AAF_MED, COL_TEXT);
+            fb_text_cx(52, bly, "km/h", &AAF_LBLS, COL_MUTED);
+        }
+        {
+            char wa[6] = "--";
+            if (s->pitot_valid && s->pitot_pa > 0.3f) {
+                float v_air = sqrtf(2.0f * s->pitot_pa / 1.225f) * 3.6f;
+                snprintf(wa, sizeof(wa), "%d", (int)v_air);
+            }
+            fb_text_cx(CX, bvy, wa, &AAF_MED, COL_ACCENT);
+            fb_text_cx(CX, bly, "wind", &AAF_LBLS, COL_MUTED);
+        }
+        {
+            char pw[6] = "--";
+            if (s->power_w > 0) snprintf(pw, sizeof(pw), "%d", s->power_w);
+            fb_text_cx(FB_W - 52, bvy, pw, &AAF_MED, COL_POWER);
+            fb_text_cx(FB_W - 52, bly, "W", &AAF_LBLS, COL_MUTED);
         }
         render_status_dots(s);
         break;
@@ -597,67 +603,72 @@ switch (g_screen) {
 
     // ── Lap / Session timer ───────────────────────────────────────────────────
     case SCR_TIMER: {
-        fb_str((FB_W - 36) / 2, 18, "LAP", COL_MUTED, 2);
+        fb_text_cx(CX, 20, "LAP", &AAF_LABEL, COL_MUTED);
         {
             char nbuf[6];
             snprintf(nbuf, sizeof(nbuf), "%d", g_lap_num_display);
-            int nw = (int)strlen(nbuf) * 30;
-            fb_str((FB_W - nw) / 2, 40, nbuf, COL_ACCENT, 5);
+            fb_text_center(CX, 66, nbuf, &AAF_HERO, COL_ACCENT);
         }
         {
             uint16_t lap_col = (g_lap_elapsed_s < 60) ? COL_ACCENT : COL_POWER;
-            fb_time((FB_W - 5*24) / 2, 95, g_lap_elapsed_s, lap_col, 4);
+            fb_time_cx(CX, 110, g_lap_elapsed_s, lap_col, &AAF_VAL);
         }
-        fb_str((FB_W - 18) / 2, 130, "LAP", COL_MUTED, 1);
-        fb_hline(30, FB_W - 30, 150, COL_SURFACE);
-        fb_hline(30, FB_W - 30, 151, COL_PANEL);
-        fb_str((FB_W - 18) / 2, 162, "TOT", COL_MUTED, 1);
-        fb_time((FB_W - 5*18) / 2, 174, g_session_elapsed_s, COL_TEXT, 3);
+        fb_hline(30, FB_W - 30, 162, COL_PANEL);
+        fb_text_cx(CX, 172, "TOT", &AAF_LBLS, COL_MUTED);
+        fb_time_cx(CX, 188, g_session_elapsed_s, COL_TEXT, &AAF_MED);
         render_status_dots(s);
         break;
     }
 
     // ── Speed ─────────────────────────────────────────────────────────────────
     case SCR_SPEED: {
-        fb_str((FB_W - 60) / 2, 8, "Speed", COL_MUTED, 2);
+        fb_text(12, 8, "SPEED", &AAF_LABEL, COL_MUTED);
 
         float spd_kmh = s->gps_valid    ? s->speed_ms * 3.6f
                       : (p && p->valid) ? p->v_ground_ms * 3.6f
                       : 0.0f;
         char spd_buf[6];
         snprintf(spd_buf, sizeof(spd_buf), "%d", (int)spd_kmh);
-        int sw = (int)strlen(spd_buf) * 36;
-        fb_str((FB_W - sw) / 2, CY - 22, spd_buf, COL_SPEED, 6);
-
-        int km_w = 4 * 12;
-        fb_str((FB_W - km_w) / 2, CY + 26, "km/h", COL_MUTED, 2);
+        fb_text_center(CX, CY - 26, spd_buf, &AAF_HERO, COL_SPEED);
+        fb_text_cx(CX, CY + 6, "km/h", &AAF_LABEL, COL_MUTED);
 
         if (s->pitot_valid && s->pitot_pa > 0.3f) {
             float v_air  = sqrtf(2.0f * s->pitot_pa / 1.225f) * 3.6f;
             float delta  = spd_kmh - v_air;
-            char  air[20], wind[20];
-            snprintf(air,  sizeof(air),  "Air: %d km/h",  (int)v_air);
-            snprintf(wind, sizeof(wind), "Wind: %+d km/h", (int)delta);
-            int aw = (int)strlen(air) * 12, ww = (int)strlen(wind) * 12;
-            fb_str((FB_W - aw) / 2, CY + 44, air,  COL_ACCENT, 2);
+            char  air[6], wind[6];
+            snprintf(air,  sizeof(air),  "%d",  (int)v_air);
+            snprintf(wind, sizeof(wind), "%+d", (int)delta);
             uint16_t wcol = (delta >  2.0f) ? COL_ALERT
                           : (delta < -2.0f) ? COL_ACCENT : COL_MUTED;
-            fb_str((FB_W - ww) / 2, CY + 60, wind, wcol, 2);
+            // "Air  NN km/h" (parola Inter + numero JBMono + unità Inter)
+            int wa = aaf_text_w(&AAF_LBLS, "Air ") + aaf_text_w(&AAF_NUMS, air) + aaf_text_w(&AAF_LBLS, " km/h");
+            int ax = CX - wa / 2;
+            ax = fb_text(ax, CY + 40, "Air ", &AAF_LBLS, COL_MUTED);
+            ax = fb_text(ax, CY + 38, air, &AAF_NUMS, COL_ACCENT);
+            fb_text(ax, CY + 40, " km/h", &AAF_LBLS, COL_MUTED);
+            // "Wind ±NN km/h"
+            int ww = aaf_text_w(&AAF_LBLS, "Wind ") + aaf_text_w(&AAF_NUMS, wind) + aaf_text_w(&AAF_LBLS, " km/h");
+            int wx = CX - ww / 2;
+            wx = fb_text(wx, CY + 60, "Wind ", &AAF_LBLS, COL_MUTED);
+            wx = fb_text(wx, CY + 58, wind, &AAF_NUMS, wcol);
+            fb_text(wx, CY + 60, " km/h", &AAF_LBLS, COL_MUTED);
         }
 
         if (s->hr_bpm > 0) {
             char hr[6];
             snprintf(hr, sizeof(hr), "%d", s->hr_bpm);
-            fb_str(FB_W - (int)strlen(hr) * 12 - 4, 8, hr, COL_ALERT, 2);
-            fb_str(FB_W - 24, 24, "bpm", COL_MUTED, 2);
+            fb_text_r(FB_W - 10, 8, hr, &AAF_MED, COL_ALERT);
+            fb_text_r(FB_W - 10, 34, "bpm", &AAF_LBLS, COL_MUTED);
         }
 
         if (s->power_w > 0) {
-            char pw[12];
-            snprintf(pw, sizeof(pw), "%d W", s->power_w);
-            int pw_w = (int)strlen(pw) * 12;
-            fb_str((FB_W - pw_w) / 2, FB_H - 44,
-                   pw, power_zone_col(s->power_w, g_rider_ftp_w), 2);
+            char pw[8];
+            snprintf(pw, sizeof(pw), "%d", s->power_w);
+            uint16_t pcol = power_zone_col(s->power_w, g_rider_ftp_w);
+            int pwn = aaf_text_w(&AAF_MED, pw), pwu = aaf_text_w(&AAF_LABEL, " W");
+            int px  = CX - (pwn + pwu) / 2;
+            px = fb_text(px, FB_H - 52, pw, &AAF_MED, pcol);
+            fb_text(px, FB_H - 48, " W", &AAF_LABEL, COL_MUTED);
         }
         render_status_dots(s);
         break;
@@ -669,17 +680,22 @@ switch (g_screen) {
         uint16_t    zone_col  = power_zone_col(s->power_w, g_rider_ftp_w);
         const char *zone_name = power_zone_name(s->power_w, g_rider_ftp_w);
 
-        snprintf(buf, sizeof(buf), "%d W", s->power_w);
-        int pw_w = (int)strlen(buf) * 18;
-        fb_str((FB_W - pw_w) / 2, 10, buf, zone_col, 3);
-
-        int znw = (int)strlen(zone_name) * 12;
-        fb_str((FB_W - znw) / 2, 38, zone_name, zone_col, 2);
+        // "238 W" hero (numero JBMono + unità Inter)
+        snprintf(buf, sizeof(buf), "%d", s->power_w);
+        {
+            int pn = aaf_text_w(&AAF_HERO, buf), pu = aaf_text_w(&AAF_LABEL, " W");
+            int px = CX - (pn + pu) / 2;
+            px = fb_text(px, 12, buf, &AAF_HERO, zone_col);
+            fb_text(px, 30, " W", &AAF_LABEL, COL_MUTED);
+        }
+        fb_text_cx(CX, 64, zone_name, &AAF_LABEL, zone_col);
 
         if (g_rider_mass_kg > 0.0f && s->power_w > 0) {
-            snprintf(buf, sizeof(buf), "%.1f W/kg", s->power_w / g_rider_mass_kg);
-            int wkw = (int)strlen(buf) * 12;
-            fb_str((FB_W - wkw) / 2, 56, buf, COL_MUTED, 2);
+            snprintf(buf, sizeof(buf), "%.1f", s->power_w / g_rider_mass_kg);
+            int wn = aaf_text_w(&AAF_MED, buf), wu = aaf_text_w(&AAF_LBLS, " W/kg");
+            int wx = CX - (wn + wu) / 2;
+            wx = fb_text(wx, 84, buf, &AAF_MED, COL_TEXT);
+            fb_text(wx, 90, " W/kg", &AAF_LBLS, COL_MUTED);
         }
 
         if (p && p->valid && s->power_w > 0) {
@@ -688,7 +704,7 @@ switch (g_screen) {
             uint8_t pr  = (pr_f > 100.0f) ? 100 : (pr_f < 0.0f) ? 0 : (uint8_t)pr_f;
             uint8_t po  = (pa + pr < 100) ? (100 - pa - pr) : 0;
 
-            const int BH = 100, BY = 84, BW = 30, GAP = 14;
+            const int BH = 96, BY = 128, BW = 34, GAP = 18;
             int bx = (FB_W - (3*BW + 2*GAP)) / 2;
 
             struct { uint8_t pct; uint16_t col; const char *lbl; } bars[3] = {
@@ -700,23 +716,19 @@ switch (g_screen) {
                 int filled = BH * bars[b].pct / 100;
                 for (int y = BY; y < BY + BH; y++)
                     for (int x = bx; x < bx + BW; x++)
-                        if (x>=0&&x<FB_W&&y>=0&&y<FB_H) PX(x,y) = COL_TRACK;
+                        if (x>=0&&x<FB_W&&y>=0&&y<FB_H) PX(x,y) = COL_PANEL;
                 for (int y = BY + BH - filled; y < BY + BH; y++)
                     for (int x = bx; x < bx + BW; x++)
                         if (x>=0&&x<FB_W&&y>=0&&y<FB_H) PX(x,y) = bars[b].col;
 
-                int lw = (int)strlen(bars[b].lbl) * 6;
-                fb_str(bx + (BW - lw) / 2, BY - 14, bars[b].lbl, bars[b].col, 1);
-
+                fb_text_cx(bx + BW / 2, BY - 16, bars[b].lbl, &AAF_LBLS, COL_MUTED);
                 snprintf(buf, sizeof(buf), "%d%%", bars[b].pct);
-                int buw = (int)strlen(buf) * 6;
-                fb_str(bx + (BW - buw) / 2, BY + BH + 6, buf, bars[b].col, 1);
+                fb_text_cx(bx + BW / 2, BY + BH + 6, buf, &AAF_NUMS, bars[b].col);
 
                 bx += BW + GAP;
             }
         } else {
-            int dw = 3 * 12;
-            fb_str((FB_W - dw) / 2, CY, "---", COL_MUTED, 2);
+            fb_text_center(CX, CY + 20, "---", &AAF_VAL, COL_MUTED);
         }
         render_status_dots(s);
         break;
@@ -743,47 +755,47 @@ switch (g_screen) {
                              : (cpct < 0.67f) ? COL_POWER : COL_ALERT;
             if (!cda_valid) cda_col = COL_MUTED;
 
-            fb_str(10, 10, "CdA", COL_MUTED, 2);
+            fb_text(12, 12, "CdA", &AAF_LBLS, COL_MUTED);
             if (cda_valid) {
-                snprintf(buf, sizeof(buf), "0.%03d", (int)(cda_val * 1000) % 1000);
-                fb_str(10, 28, buf, cda_col, 3);
-                fb_str(10, 72, cda_grade(cda_val), cda_col, 2);
+                snprintf(buf, sizeof(buf), ".%03d", (int)(cda_val * 1000) % 1000);
+                fb_text(12, 36, buf, &AAF_MED, cda_col);
+                fb_text(12, 96, cda_grade(cda_val), &AAF_MED, cda_col);
             } else {
-                fb_str(10, 28, "---", COL_MUTED, 3);
+                fb_text(12, 36, "---", &AAF_MED, COL_MUTED);
             }
         }
 
         // TR — Heart Rate
-        fb_str(130, 10, "HR", COL_MUTED, 2);
+        fb_text(132, 12, "HR", &AAF_LBLS, COL_MUTED);
         {
             uint16_t hr_col = s->hr_bpm > 0 ? COL_ALERT : COL_MUTED;
             snprintf(buf, sizeof(buf), "%d", s->hr_bpm > 0 ? s->hr_bpm : 0);
-            fb_str(130, 28, buf, hr_col, 4);
-            fb_str(130, 64, "bpm", COL_MUTED, 2);
-            fb_circle(195, 108, 5, hr_col);
+            fb_text(132, 36, buf, &AAF_MED, hr_col);
+            fb_text(132, 96, "bpm", &AAF_LBLS, COL_MUTED);
+            fb_circle(208, 100, 5, hr_col);
         }
 
         // BL — Cadence
-        fb_str(10, 172, "Cadence", COL_MUTED, 2);
+        fb_text(12, 174, "Cadence", &AAF_LBLS, COL_MUTED);
         {
             uint16_t cad_col = s->cadence_rpm > 0 ? COL_POWER : COL_MUTED;
             snprintf(buf, sizeof(buf), "%d", s->cadence_rpm > 0 ? s->cadence_rpm : 0);
-            fb_str(10, 190, buf, cad_col, 4);
-            fb_str(10, 226, "rpm", COL_MUTED, 2);
+            fb_text(12, 198, buf, &AAF_MED, cad_col);
+            fb_text(12, 258, "rpm", &AAF_LBLS, COL_MUTED);
         }
 
         // BR — Power
         {
             uint16_t pwr_col = power_zone_col(s->power_w, g_rider_ftp_w);
-            fb_str(130, 172, "Power", COL_MUTED, 2);
+            fb_text(132, 174, "Power", &AAF_LBLS, COL_MUTED);
             snprintf(buf, sizeof(buf), "%d", s->power_w > 0 ? s->power_w : 0);
-            fb_str(130, 190, buf, pwr_col, 4);
-            fb_str(130, 226, "W", COL_MUTED, 2);
+            fb_text(132, 198, buf, &AAF_MED, pwr_col);
+            fb_text(132, 258, "W", &AAF_LBLS, COL_MUTED);
             if (s->power_w > 0) {
                 const char *zn = power_zone_name(s->power_w, g_rider_ftp_w);
-                fb_str(130, 250, zn, pwr_col, 1);
+                fb_text(132, 278, zn, &AAF_LBLS, pwr_col);
             }
-            fb_circle(195, 295, 4, s->ant_valid ? COL_ACCENT : COL_MUTED);
+            fb_circle(208, 282, 5, s->ant_valid ? COL_ACCENT : COL_MUTED);
         }
         break;
     }
@@ -795,7 +807,7 @@ switch (g_screen) {
     {
         uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000LL);
         if (g_toast_end_ms > now_ms && g_toast_msg[0]) {
-            int msg_w = (int)strlen(g_toast_msg) * 12;
+            int msg_w = aaf_text_w(&AAF_LABEL, g_toast_msg);
             int box_w = msg_w + 24, box_h = 30;
             int bx = (FB_W - box_w) / 2, by = (FB_H - box_h) / 2;
             for (int yy = by - 2; yy < by + box_h + 2; yy++)
@@ -806,7 +818,7 @@ switch (g_screen) {
                 for (int xx = bx; xx < bx + box_w; xx++)
                     if (xx >= 0 && xx < FB_W && yy >= 0 && yy < FB_H)
                         PX(xx, yy) = COL_BG;
-            fb_str((FB_W - msg_w) / 2, by + 8, g_toast_msg, COL_ACCENT, 2);
+            fb_text_cx(FB_W / 2, by + 9, g_toast_msg, &AAF_LABEL, COL_ACCENT);
         }
     }
     display_flush();
