@@ -29,8 +29,7 @@
 static esp_lcd_panel_io_handle_t g_io_handle = NULL;
 static esp_lcd_panel_handle_t    g_panel     = NULL;
 static SemaphoreHandle_t         g_lcd_done  = NULL;
-static uint16_t                 *g_fb     = NULL;   // framebuffer di rendering
-static uint16_t                 *g_fb_tx  = NULL;   // copia byte-swappata per il flush
+static uint16_t                 *g_fb     = NULL;   // framebuffer di rendering (PSRAM)
 static bool                       g_bl_on = false;
 
 // ─── Colour helpers ───────────────────────────────────────────────────────────
@@ -103,7 +102,7 @@ esp_err_t display_init(void)
         .sclk_io_num     = PIN_LCD_SCLK,
         .quadwp_io_num   = -1,
         .quadhd_io_num   = -1,
-        .max_transfer_sz = FB_BYTES + 16,
+        .max_transfer_sz = FB_W * 40 * 2 + 16,   // una strip da 40 righe
     };
     esp_err_t ret = spi_bus_initialize(LCD_SPI_HOST, &bus, SPI_DMA_CH_AUTO);
     if (ret != ESP_OK) { ESP_LOGE("lcd", "spi_bus_initialize: %s", esp_err_to_name(ret)); return ret; }
@@ -139,11 +138,9 @@ esp_err_t display_init(void)
     display_set_brightness(90);
     g_bl_on = true;
 
-    g_fb    = (uint16_t *)heap_caps_malloc(FB_BYTES, MALLOC_CAP_SPIRAM);
-    g_fb_tx = (uint16_t *)heap_caps_malloc(FB_BYTES, MALLOC_CAP_SPIRAM);
-    if (!g_fb)    g_fb    = (uint16_t *)heap_caps_malloc(FB_BYTES, MALLOC_CAP_INTERNAL);
-    if (!g_fb_tx) g_fb_tx = (uint16_t *)heap_caps_malloc(FB_BYTES, MALLOC_CAP_INTERNAL);
-    if (!g_fb || !g_fb_tx) return ESP_ERR_NO_MEM;
+    g_fb = (uint16_t *)heap_caps_malloc(FB_BYTES, MALLOC_CAP_SPIRAM);
+    if (!g_fb) g_fb = (uint16_t *)heap_caps_malloc(FB_BYTES, MALLOC_CAP_INTERNAL);
+    if (!g_fb) return ESP_ERR_NO_MEM;
 
     memset(g_fb, 0, FB_BYTES);
     return ESP_OK;
@@ -152,11 +149,17 @@ esp_err_t display_init(void)
 // ─── Flush framebuffer (esp_lcd) ──────────────────────────────────────────────
 static void display_flush(void)
 {
-    if (!g_panel || !g_fb || !g_fb_tx) return;
-    // ST7789 vuole RGB565 big-endian sul wire: byte-swap dell'intero frame.
-    for (int i = 0; i < FB_W * FB_H; i++) g_fb_tx[i] = swap16(g_fb[i]);
-    esp_lcd_panel_draw_bitmap(g_panel, 0, 0, FB_W, FB_H, g_fb_tx);
-    if (g_lcd_done) xSemaphoreTake(g_lcd_done, pdMS_TO_TICKS(500));  // attende fine DMA
+    if (!g_panel || !g_fb) return;
+    // Flush a STRIP da RAM INTERNA: la DMA SPI full-frame da PSRAM è instabile
+    // (queue color failed). ST7789 vuole RGB565 big-endian → byte-swap di ogni
+    // strip in un buffer .bss DMA-capable, una strip alla volta.
+    static uint16_t strip[FB_W * 40];
+    for (int y = 0; y < FB_H; y += 40) {
+        int h = (y + 40 > FB_H) ? (FB_H - y) : 40;
+        for (int i = 0; i < h * FB_W; i++) strip[i] = swap16(g_fb[y * FB_W + i]);
+        esp_lcd_panel_draw_bitmap(g_panel, 0, y, FB_W, y + h, strip);
+        if (g_lcd_done) xSemaphoreTake(g_lcd_done, pdMS_TO_TICKS(200));  // libera la strip
+    }
 }
 
 // ─── Software renderer ────────────────────────────────────────────────────────
