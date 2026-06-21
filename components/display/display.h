@@ -510,17 +510,17 @@ switch (g_screen) {
         uint16_t arc_col = (pct < 0.33f) ? COL_ACCENT
                          : (pct < 0.67f) ? COL_POWER : COL_ALERT;
 
-        // Arco gauge ruotato 180° → apertura in basso (gauge classico)
+        // Arco gauge: apertura in basso; riempimento da basso-sinistra → destra
         fb_arc(CX, CY, 110, 12, -45.0f, 225.0f, COL_TRACK);
         if (valid && pct > 0.005f)
-            fb_arc(CX, CY, 110, 12, -45.0f, -45.0f + pct * 270.0f, arc_col);
+            fb_arc(CX, CY, 110, 12, 225.0f - pct * 270.0f, 225.0f, arc_col);
 
         // Session best — white tick on arc
         if (g_session_best_cda < 9000.0f) {
             float bp = (g_session_best_cda - 0.18f) / 0.20f;
             if (bp < 0.0f) bp = 0.0f;
             if (bp > 1.0f) bp = 1.0f;
-            float ba = -45.0f + bp * 270.0f;
+            float ba = 225.0f - bp * 270.0f;
             fb_arc(CX, CY, 110, 12, ba - 1.5f, ba + 1.5f, rgb(255,255,255));
         }
 
