@@ -501,6 +501,11 @@ nessuna modifica al wire). Da implementare nelle **chat figlie**.
   `/coach` (app in sim) devono portare `tUtc` (oggi assente) per la derivazione del `ts`.
 - **pi — `pc-receiver` (§5)**: validare lo schema del body **prima** di scrivere (come il
   coach) e **bindare solo all'interfaccia USB**, non `0.0.0.0`.
+- **Audit bug cross-repo completo → §10** (worklist per le figlie). Oltre ai precedenti,
+  NUOVI: app `cleanupSubs()` su connect + `normalizeCrrToTemp` (dead code, segno); pi
+  `httpGet` O(n²) + blacklist OTA `start`; coach CSP `unsafe-inline/eval` + `object-src`/
+  `frame-ancestors`; firmware hardening LOW (bound `TIME`, validazione `cal` da NVS). I
+  **falsi positivi** sono elencati in §10 (da NON implementare).
 - Nessuna modifica al wire (§2–§6). Il §7 (cloud) resta **riservato**: la ratifica
   **v0.4.0** è in carico alla **chat cloud**, dopo il test hardware dei prossimi giorni.
 
@@ -617,3 +622,49 @@ Primo contratto ratificato. Risolte 5 divergenze fra implementazioni:
 4. **pitch/rho/lapEvent** aggiunti al frame `new → pi` (già presenti nel firmware,
    registrati dal Pi).
 5. **physics.h (C)** dichiarato canonico; `engine.ts` solo fallback/sim.
+
+---
+
+## 10. Audit bug v0.3.1 — worklist per le chat figlie
+
+> Esito dell'audit cross-repo (2026-06-22) sul **codice attuale** di ogni repo. Ogni voce è
+> **azionabile e verificata leggendo il codice** (i falsi positivi sono in fondo: NON
+> implementarli). Le chat figlie implementano e spuntano; la chat madre ri-audita dopo i fix.
+> Severità: 🔴 HIGH · 🟠 MEDIUM · ⚪ LOW. Stato: «già v0.3.1» = già citato in §9; «nuovo» = emerso ora.
+> Il **cloud (§7)** non è qui: i suoi bug sono in carico alla **chat cloud** (post test HW).
+
+### Firmware ESP32 (`aerodrag-firmware`) — di fatto pulito, solo hardening difensivo
+| id | sev | file:riga | comportamento atteso / fix |
+|----|-----|-----------|-----------------------------|
+| FW-1 | ⚪ | `components/ble/ble_server.h` — TIME 0xaa10 (~467-471) | Aggiungere un **bound superiore**: rifiutare `ms` oltre ~anno 2100 (oggi si rifiuta solo `ms < 2020`). `time_t` è 64-bit → niente overflow; è difesa contro un clock telefono assurdo. |
+| FW-2 | ⚪ | `components/ble/ble_server.h` — CONFIG 0xaa08 + load NVS | Validare `cal` (mass∈[33,200], crr∈[0.001,0.025], wheel∈[1.0,2.5]) anche al **load da NVS**, non solo in WRITE → una NVS corrotta non propaga NaN a velocità/fisica. |
+| FW-3 | ⚪ | `main/main.c` — `g_current_lap` | Lettura cross-task senza lock: benigno (accesso allineato) → documentare "scritto solo da app_cpu" o proteggere la lettura. |
+
+### App `aerodrag-new`
+| id | sev | file:riga | comportamento atteso / fix | stato |
+|----|-----|-----------|-----------------------------|-------|
+| APP-1 | 🟠 | `src/hooks/useBLE.ts` — writeDeviceTime | `if (ms < 1577836800000) return;` **prima** della WRITE `TIME 0xaa10`. | già v0.3.1 |
+| APP-2 | 🟠 | `src/coach/link.ts` (~111-127) | Includere `tUtc` nei frame del fallback `/coach` (sim). | già v0.3.1 |
+| APP-3 | 🟠 | `src/hooks/useBLE.ts` — connect/subscribeAll | Chiamare `cleanupSubs()` a **inizio** `connect()` → niente accumulo di listener BLE su reconnect o su connect fallito a metà (es. read IDENTITY ko). | nuovo |
+| APP-4 | ⚪ | `src/physics/crr.ts:267` — `normalizeCrrToTemp` | Segno della correzione temperatura probabilmente invertito (`*(1-0.01·Δ)` → `*(1+0.01·Δ)`); funzione **esportata ma mai usata** → correggere o rimuovere. | nuovo |
+
+### Pi `aerodrag-pi`
+| id | sev | file:riga | comportamento atteso / fix | stato |
+|----|-----|-----------|-----------------------------|-------|
+| PI-1 | 🔴 | `pc-receiver/pc-receiver.js:182` | Bindare all'interfaccia USB (es. `192.168.7.2`, override via env), **non** `0.0.0.0`. | già v0.3.1 |
+| PI-2 | 🟠 | `pc-receiver/pc-receiver.js:80-87` | Validare lo schema del body (`ts:number`, `deviceId` MAC valido, `laps:array`) **prima** di scrivere; `400` se invalido (come il coach). | già v0.3.1 |
+| PI-3 | ⚪ | `pc-receiver/pc-receiver.js:30` — `httpGet` | Accumulare con `const chunks=[]; … ; Buffer.concat(chunks)` invece di `body += c` (evita O(n²) su risposte grandi). | nuovo |
+| PI-4 | ⚪ | `server/server.js:459` — validazione URL OTA | Aggiungere `start` ai substring rifiutati, coerente con `lap`/`stop`. | nuovo |
+
+### Coach `aerodrag-coach`
+| id | sev | file:riga | comportamento atteso / fix | stato |
+|----|-----|-----------|-----------------------------|-------|
+| CO-1 | 🟠 | `aerodrag-coach/main.js:354` — CSP | Togliere `'unsafe-inline' 'unsafe-eval'` dallo `script-src` dell'origin Pi → richiede dashboard senza inline-script (fix coordinato lato Pi). | nuovo |
+| CO-2 | ⚪ | `aerodrag-coach/main.js:352-358` — CSP | Aggiungere `object-src 'none'` e `frame-ancestors` (difesa in profondità). | nuovo |
+
+### Falsi positivi — NON sono bug (verificati nel codice; non implementare)
+- **FW IDENTITY READ** 50 B vs MTU 53: 50 ≤ MTU−1; il contratto lo dimensiona apposta, NimBLE gestisce il Read Blob.
+- **FW IDENTITY WRITE** "overread": buffer `char name[32] = {0}` (zero-init) + `len < 32` → NUL sempre presente.
+- **APP whitelist offset** `2+i*7`: è ≡ `1+i*7+1` (identico al "fix" proposto); layout corretto (display order, §2 v0.2.3).
+- **APP `crr.ts`** init `Infinity`/`-Infinity` e div-0 su slope: idioma min/max standard e slope>85° impossibile in bici; entrambi guardati a monte.
+- **PI** `tsUtc` "non inizializzato" / `frameCount` "illimitato": comportamento corretto (`undefined > 0` = false → fallback `serverTs`; `Number` è 64-bit).
