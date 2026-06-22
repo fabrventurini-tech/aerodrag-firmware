@@ -59,7 +59,7 @@ typedef struct {
     coach_mode_t  mode;
 } coach_config_t;
 
-extern uint16_t g_current_lap;
+extern volatile uint16_t g_current_lap;
 extern device_identity_t g_identity;
 
 // Relay coach→app via BLE COACH_LINK (0xaa0f) — definito in ble_server.h,

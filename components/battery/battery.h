@@ -106,8 +106,15 @@ esp_err_t cal_load(aerodrag_cal_t *cal)
         *cal = CAL_DEFAULT;
         return ESP_ERR_NOT_FOUND;
     }
-    // Blob salvato da un firmware senza wheel_circ_m (o corrotto): default
-    if (cal->wheel_circ_m < 1.0f || cal->wheel_circ_m > 2.5f)
+    // Validazione anche al LOAD da NVS (audit v0.3.1, FW-2): una NVS corrotta o
+    // salvata da un firmware più vecchio non deve propagare valori fuori range
+    // (o NaN) a velocità/fisica. Forma !(x >= lo && x <= hi) → respinge anche NaN.
+    // Stessi range della WRITE su CONFIG 0xaa08 (contract §2).
+    if (!(cal->mass_kg      >= 33.0f  && cal->mass_kg      <= 200.0f))
+        cal->mass_kg      = CAL_DEFAULT.mass_kg;
+    if (!(cal->crr          >= 0.001f && cal->crr          <= 0.025f))
+        cal->crr          = CAL_DEFAULT.crr;
+    if (!(cal->wheel_circ_m >= 1.0f   && cal->wheel_circ_m <= 2.5f))
         cal->wheel_circ_m = CAL_DEFAULT.wheel_circ_m;
     return ESP_OK;
 }

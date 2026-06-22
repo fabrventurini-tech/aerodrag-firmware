@@ -76,7 +76,10 @@ static SemaphoreHandle_t   g_i2c1_mutex    = NULL;
 
 static float g_cda_smooth = 0.0f;
 
-uint16_t g_current_lap = 1;
+// Contatore giro condiviso fra task (scritto da ANT+/coach-WiFi, letto dal task
+// display). L'accesso a un uint16_t allineato è atomico su ESP32 (niente torn read);
+// `volatile` garantisce che il task display osservi gli aggiornamenti (audit v0.3.1, FW-3).
+volatile uint16_t g_current_lap = 1;
 
 // Fix H3: inizializzato in app_main (non a 0) per evitare che il watchdog
 // deep-sleep scatti 10 minuti dopo il boot prima di qualsiasi sessione.

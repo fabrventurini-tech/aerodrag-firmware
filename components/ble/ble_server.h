@@ -467,7 +467,9 @@ static int time_access_cb(uint16_t conn_handle, uint16_t attr_handle,
     if (OS_MBUF_PKTLEN(ctxt->om) != 8) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
     uint64_t ms = 0;
     os_mbuf_copydata(ctxt->om, 0, 8, &ms);
-    if (ms < AERODRAG_EPOCH_MIN_MS) return BLE_ATT_ERR_VALUE_NOT_ALLOWED;  // epoch < 2020
+    // Range plausibile [2020, 2100) — respinge clock non impostato o assurdo (FW-1, v0.3.1)
+    if (ms < AERODRAG_EPOCH_MIN_MS || ms >= AERODRAG_EPOCH_MAX_MS)
+        return BLE_ATT_ERR_VALUE_NOT_ALLOWED;
     aerodrag_time_set_epoch_ms(ms);
     ESP_LOGI("ble_time", "Orologio impostato: %llu ms UTC", (unsigned long long)ms);
     return 0;

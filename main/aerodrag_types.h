@@ -10,6 +10,9 @@
 // Convenzione condivisa con il contratto: tUtc == 0 ⇒ orologio NON impostato
 // (epoch < 2020-01-01). Nessuno stato duplicato altrove.
 #define AERODRAG_EPOCH_MIN_MS  1577836800000ULL   // 2020-01-01T00:00:00Z
+// Bound superiore (audit v0.3.1, FW-1): rifiuta un clock telefono assurdo.
+// time_t è 64-bit → niente overflow; è solo difesa di sanità.
+#define AERODRAG_EPOCH_MAX_MS  4102444800000ULL   // 2100-01-01T00:00:00Z
 
 static inline void aerodrag_time_set_epoch_ms(uint64_t ms)
 {
