@@ -1,6 +1,11 @@
 #pragma once
 #include "esp_err.h"
+#include "esp_log.h"
 #include "driver/spi_master.h"
+#include "esp_lcd_panel_io.h"
+#include "esp_lcd_panel_vendor.h"
+#include "esp_lcd_panel_ops.h"
+#include "freertos/semphr.h"
 #include "driver/gpio.h"
 #include "driver/ledc.h"
 #include "esp_rom_gpio.h"
@@ -10,43 +15,23 @@
 #include "board_pins.h"
 #include "aerodrag_types.h"
 #include "qrcodegen.h"
+#include "aafont_data.h"
 #include <stdio.h>
 #include <math.h>
 #include <string.h>
 
-// ─── ST7789T3 init sequence (Waveshare ESP32-S3-Touch-LCD-2.8) ───────────────
-typedef struct { uint8_t cmd; uint8_t data[16]; uint8_t len; uint8_t delay_ms; } lcd_cmd_t;
-
-static const lcd_cmd_t ST7789_INIT[] = {
-    { 0x01, {0}, 0, 150 },   // software reset
-    { 0x11, {0}, 0, 120 },   // sleep out
-    { 0x3A, {0x55}, 1, 10 }, // pixel format RGB565
-    { 0x36, {0x00}, 1, 0  }, // MADCTL: portrait 240x320
-    { 0x2A, {0x00,0x00,0x00,0xEF}, 4, 0 }, // column address 0-239
-    { 0x2B, {0x00,0x00,0x01,0x3F}, 4, 0 }, // row address 0-319
-    { 0xB2, {0x0C,0x0C,0x00,0x33,0x33}, 5, 0 }, // porch control
-    { 0xB7, {0x35}, 1, 0  }, // gate control
-    { 0xBB, {0x19}, 1, 0  }, // VCOMS
-    { 0xC0, {0x2C}, 1, 0  }, // LCM control
-    { 0xC2, {0x01}, 1, 0  }, // VDV/VRH enable
-    { 0xC3, {0x12}, 1, 0  }, // VRH set
-    { 0xC4, {0x20}, 1, 0  }, // VDV set
-    { 0xC6, {0x0F}, 1, 0  }, // FR control
-    { 0xD0, {0xA4,0xA1}, 2, 0 }, // power control 1
-    { 0xE0, {0xD0,0x04,0x0D,0x11,0x13,0x2B,0x3F,0x54,0x4C,0x18,0x0D,0x0B,0x1F,0x23}, 14, 0 },
-    { 0xE1, {0xD0,0x04,0x0C,0x11,0x13,0x2C,0x3F,0x44,0x51,0x2F,0x1F,0x1F,0x20,0x23}, 14, 0 },
-    { 0x21, {0}, 0, 0  },   // display inversion on
-    { 0x29, {0}, 0, 10 },   // display on
-};
+// L'init ST7789 è gestito dal driver ufficiale esp_lcd (esp_lcd_new_panel_st7789).
 
 // ─── Framebuffer — 240×320 × 2 bytes = 153.6 KB ──────────────────────────────
 #define FB_W  240
 #define FB_H  320
 #define FB_BYTES (FB_W * FB_H * 2)
 
-static spi_device_handle_t g_spi  = NULL;
-static uint16_t            *g_fb  = NULL;
-static bool                 g_bl_on = false;
+static esp_lcd_panel_io_handle_t g_io_handle = NULL;
+static esp_lcd_panel_handle_t    g_panel     = NULL;
+static SemaphoreHandle_t         g_lcd_done  = NULL;
+static uint16_t                 *g_fb     = NULL;   // framebuffer di rendering (PSRAM)
+static bool                       g_bl_on = false;
 
 // ─── Colour helpers ───────────────────────────────────────────────────────────
 static inline uint16_t rgb(uint8_t r, uint8_t g, uint8_t b)
@@ -55,38 +40,27 @@ static inline uint16_t rgb(uint8_t r, uint8_t g, uint8_t b)
 }
 static inline uint16_t swap16(uint16_t v) { return (v << 8) | (v >> 8); }
 
-#define COL_BG      rgb(9,  13, 20)
-#define COL_SURFACE rgb(17, 25, 38)
-#define COL_TEAL    rgb(0,  212,170)
-#define COL_AMBER   rgb(245,166, 35)
-#define COL_RED     rgb(242, 69, 96)
-#define COL_MUTED   rgb(77, 96,128)
-#define COL_TEXT    rgb(221,232,245)
+// ── AeroDrag palette unificata (RGB565 via rgb(), derivata dall'hex) ──────────
+#define COL_ACCENT   rgb(0,   217, 163)  // #00d9a3  CdA, brand, OK, attivo
+#define COL_POWER    rgb(245, 166, 35)   // #f5a623  potenza, quota AERO, warning
+#define COL_SPEED    rgb(77,  159, 255)  // #4d9fff  velocità, rolling, info
+#define COL_ALERT    rgb(255, 77,  106)  // #ff4d6a  SOLO FC, peak, allarmi
+#define COL_POSITIVE rgb(34,  197, 94)   // #22c55e  new best, delta migliore
+#define COL_TEXT     rgb(219, 230, 246)  // #dbe6f6  valori, titoli
+#define COL_TEXTDIM  rgb(131, 152, 189)  // #8398bd  testo secondario
+#define COL_MUTED    rgb(70,  88,  124)  // #46587c  label, unità, assi
+#define COL_SURFACE  rgb(15,  20,  32)   // #0f1420  card
+#define COL_TRACK    rgb(30,  40,  64)   // #1e2840  track anelli/barre
+#define COL_PANEL    rgb(19,  26,  40)   // #131a28  divisori
+#define COL_BG       rgb(7,   9,   15)   // #07090f  sfondo schermo
 
-// ─── SPI helpers ──────────────────────────────────────────────────────────────
-static void lcd_cmd(uint8_t c)
+// ─── Callback fine trasferimento colore (sincronizza il flush) ────────────────
+static bool lcd_color_done(esp_lcd_panel_io_handle_t io,
+                           esp_lcd_panel_io_event_data_t *edata, void *ctx)
 {
-    gpio_set_level(PIN_LCD_DC, 0);
-    spi_transaction_t t = { .length = 8, .tx_buffer = &c };
-    spi_device_polling_transmit(g_spi, &t);
-}
-
-static void lcd_data(const uint8_t *d, size_t len)
-{
-    if (!len) return;
-    gpio_set_level(PIN_LCD_DC, 1);
-    spi_transaction_t t = { .length = len * 8, .tx_buffer = d };
-    spi_device_polling_transmit(g_spi, &t);
-}
-
-static void lcd_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
-{
-    uint8_t d[4];
-    lcd_cmd(0x2A);
-    d[0]=x0>>8; d[1]=x0; d[2]=x1>>8; d[3]=x1; lcd_data(d,4);
-    lcd_cmd(0x2B);
-    d[0]=y0>>8; d[1]=y0; d[2]=y1>>8; d[3]=y1; lcd_data(d,4);
-    lcd_cmd(0x2C);
+    BaseType_t hp = pdFALSE;
+    if (g_lcd_done) xSemaphoreGiveFromISR(g_lcd_done, &hp);
+    return hp == pdTRUE;
 }
 
 // ─── Backlight (PWM via LEDC) ─────────────────────────────────────────────────
@@ -118,74 +92,74 @@ void display_set_brightness(uint8_t pct)  // 0-100
     ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
 }
 
-// ─── Init ─────────────────────────────────────────────────────────────────────
+// ─── Init (driver ufficiale esp_lcd / ST7789) ─────────────────────────────────
 esp_err_t display_init(void)
 {
+    g_lcd_done = xSemaphoreCreateBinary();
+
     spi_bus_config_t bus = {
         .mosi_io_num     = PIN_LCD_MOSI,
         .miso_io_num     = -1,
         .sclk_io_num     = PIN_LCD_SCLK,
         .quadwp_io_num   = -1,
         .quadhd_io_num   = -1,
-        .max_transfer_sz = FB_W * 40 * 2,
+        .max_transfer_sz = FB_W * 40 * 2 + 16,   // una strip da 40 righe
     };
     esp_err_t ret = spi_bus_initialize(LCD_SPI_HOST, &bus, SPI_DMA_CH_AUTO);
-    if (ret != ESP_OK) return ret;
+    if (ret != ESP_OK) { ESP_LOGE("lcd", "spi_bus_initialize: %s", esp_err_to_name(ret)); return ret; }
 
-    spi_device_interface_config_t dev = {
-        .clock_speed_hz = LCD_SPI_CLK_HZ,
-        .mode           = 0,
-        .spics_io_num   = PIN_LCD_CS,
-        .queue_size     = 7,
+    esp_lcd_panel_io_spi_config_t io_cfg = {
+        .dc_gpio_num         = PIN_LCD_DC,
+        .cs_gpio_num         = PIN_LCD_CS,
+        .pclk_hz             = LCD_SPI_CLK_HZ,
+        .lcd_cmd_bits        = 8,
+        .lcd_param_bits      = 8,
+        .spi_mode            = 0,
+        .trans_queue_depth   = 10,
+        .on_color_trans_done = lcd_color_done,
     };
-    ret = spi_bus_add_device(LCD_SPI_HOST, &dev, &g_spi);
-    if (ret != ESP_OK) return ret;
+    ret = esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)LCD_SPI_HOST, &io_cfg, &g_io_handle);
+    if (ret != ESP_OK) { ESP_LOGE("lcd", "panel_io_spi: %s", esp_err_to_name(ret)); return ret; }
 
-    gpio_set_direction(PIN_LCD_DC,  GPIO_MODE_OUTPUT);
-    gpio_set_direction(PIN_LCD_RST, GPIO_MODE_OUTPUT);
+    esp_lcd_panel_dev_config_t panel_cfg = {
+        .reset_gpio_num = PIN_LCD_RST,
+        .rgb_ele_order  = LCD_RGB_ELEMENT_ORDER_RGB,
+        .bits_per_pixel = 16,
+    };
+    ret = esp_lcd_new_panel_st7789(g_io_handle, &panel_cfg, &g_panel);
+    if (ret != ESP_OK) { ESP_LOGE("lcd", "new_panel_st7789: %s", esp_err_to_name(ret)); return ret; }
 
-    gpio_set_level(PIN_LCD_RST, 0); vTaskDelay(pdMS_TO_TICKS(15));
-    gpio_set_level(PIN_LCD_RST, 1); vTaskDelay(pdMS_TO_TICKS(120));
-
-    for (size_t i = 0; i < sizeof(ST7789_INIT)/sizeof(ST7789_INIT[0]); i++) {
-        lcd_cmd(ST7789_INIT[i].cmd);
-        if (ST7789_INIT[i].len)
-            lcd_data(ST7789_INIT[i].data, ST7789_INIT[i].len);
-        if (ST7789_INIT[i].delay_ms)
-            vTaskDelay(pdMS_TO_TICKS(ST7789_INIT[i].delay_ms));
-    }
+    esp_lcd_panel_reset(g_panel);
+    esp_lcd_panel_init(g_panel);
+    esp_lcd_panel_invert_color(g_panel, true);     // ST7789: inversione colore ON
+    esp_lcd_panel_disp_on_off(g_panel, true);
+    ESP_LOGI("lcd", "esp_lcd ST7789 init OK @ %d MHz", LCD_SPI_CLK_HZ/1000000);
 
     bl_init();
     display_set_brightness(90);
     g_bl_on = true;
 
     g_fb = (uint16_t *)heap_caps_malloc(FB_BYTES, MALLOC_CAP_SPIRAM);
-    if (!g_fb)
-        g_fb = (uint16_t *)heap_caps_malloc(FB_BYTES, MALLOC_CAP_INTERNAL);
+    if (!g_fb) g_fb = (uint16_t *)heap_caps_malloc(FB_BYTES, MALLOC_CAP_INTERNAL);
     if (!g_fb) return ESP_ERR_NO_MEM;
 
     memset(g_fb, 0, FB_BYTES);
     return ESP_OK;
 }
 
-// ─── Flush framebuffer in 40-line strips ─────────────────────────────────────
+// ─── Flush framebuffer (esp_lcd) ──────────────────────────────────────────────
 static void display_flush(void)
 {
-    const int STRIP = 40;
-    static uint16_t strip_buf[FB_W * 40];
-
-    lcd_window(0, 0, FB_W-1, FB_H-1);
-    gpio_set_level(PIN_LCD_DC, 1);
-
-    for (int y = 0; y < FB_H; y += STRIP) {
-        int h = (y + STRIP > FB_H) ? (FB_H - y) : STRIP;
-        for (int i = 0; i < h * FB_W; i++)
-            strip_buf[i] = swap16(g_fb[y * FB_W + i]);
-        spi_transaction_t t = {
-            .length    = h * FB_W * 16,
-            .tx_buffer = strip_buf,
-        };
-        spi_device_polling_transmit(g_spi, &t);
+    if (!g_panel || !g_fb) return;
+    // Flush a STRIP da RAM INTERNA: la DMA SPI full-frame da PSRAM è instabile
+    // (queue color failed). ST7789 vuole RGB565 big-endian → byte-swap di ogni
+    // strip in un buffer .bss DMA-capable, una strip alla volta.
+    static uint16_t strip[FB_W * 40];
+    for (int y = 0; y < FB_H; y += 40) {
+        int h = (y + 40 > FB_H) ? (FB_H - y) : 40;
+        for (int i = 0; i < h * FB_W; i++) strip[i] = swap16(g_fb[y * FB_W + i]);
+        esp_lcd_panel_draw_bitmap(g_panel, 0, y, FB_W, y + h, strip);
+        if (g_lcd_done) xSemaphoreTake(g_lcd_done, pdMS_TO_TICKS(200));  // libera la strip
     }
 }
 
@@ -230,123 +204,100 @@ static void fb_hline(int x0, int x1, int y, uint16_t col)
     for (int x=x0; x<=x1; x++) if (x>=0&&x<FB_W) PX(x,y)=col;
 }
 
-// ─── 5×7 pixel font — full ASCII printable (0x20–0x7E) ───────────────────────
-static const uint8_t FONT5X7[][5] = {
-    {0x00,0x00,0x00,0x00,0x00}, // ' '
-    {0x00,0x00,0x5F,0x00,0x00}, // '!'
-    {0x00,0x07,0x00,0x07,0x00}, // '"'
-    {0x14,0x7F,0x14,0x7F,0x14}, // '#'
-    {0x24,0x2A,0x7F,0x2A,0x12}, // '$'
-    {0x23,0x13,0x08,0x64,0x62}, // '%'
-    {0x36,0x49,0x55,0x22,0x50}, // '&'
-    {0x00,0x05,0x03,0x00,0x00}, // '\''
-    {0x00,0x1C,0x22,0x41,0x00}, // '('
-    {0x00,0x41,0x22,0x1C,0x00}, // ')'
-    {0x14,0x08,0x3E,0x08,0x14}, // '*'
-    {0x08,0x08,0x3E,0x08,0x08}, // '+'
-    {0x00,0x50,0x30,0x00,0x00}, // ','
-    {0x08,0x08,0x08,0x08,0x08}, // '-'
-    {0x00,0x60,0x60,0x00,0x00}, // '.'
-    {0x20,0x10,0x08,0x04,0x02}, // '/'
-    {0x3E,0x51,0x49,0x45,0x3E}, // '0'
-    {0x00,0x42,0x7F,0x40,0x00}, // '1'
-    {0x42,0x61,0x51,0x49,0x46}, // '2'
-    {0x21,0x41,0x45,0x4B,0x31}, // '3'
-    {0x18,0x14,0x12,0x7F,0x10}, // '4'
-    {0x27,0x45,0x45,0x45,0x39}, // '5'
-    {0x3C,0x4A,0x49,0x49,0x30}, // '6'
-    {0x01,0x71,0x09,0x05,0x03}, // '7'
-    {0x36,0x49,0x49,0x49,0x36}, // '8'
-    {0x06,0x49,0x49,0x29,0x1E}, // '9'
-    {0x00,0x36,0x36,0x00,0x00}, // ':'
-    {0x00,0x56,0x36,0x00,0x00}, // ';'
-    {0x08,0x14,0x22,0x41,0x00}, // '<'
-    {0x14,0x14,0x14,0x14,0x14}, // '='
-    {0x00,0x41,0x22,0x14,0x08}, // '>'
-    {0x02,0x01,0x51,0x09,0x06}, // '?'
-    {0x32,0x49,0x79,0x41,0x3E}, // '@'
-    {0x7E,0x11,0x11,0x11,0x7E}, // 'A'
-    {0x7F,0x49,0x49,0x49,0x36}, // 'B'
-    {0x3E,0x41,0x41,0x41,0x22}, // 'C'
-    {0x7F,0x41,0x41,0x22,0x1C}, // 'D'
-    {0x7F,0x49,0x49,0x49,0x41}, // 'E'
-    {0x7F,0x09,0x09,0x09,0x01}, // 'F'
-    {0x3E,0x41,0x49,0x49,0x7A}, // 'G'
-    {0x7F,0x08,0x08,0x08,0x7F}, // 'H'
-    {0x00,0x41,0x7F,0x41,0x00}, // 'I'
-    {0x20,0x40,0x41,0x3F,0x01}, // 'J'
-    {0x7F,0x08,0x14,0x22,0x41}, // 'K'
-    {0x7F,0x40,0x40,0x40,0x40}, // 'L'
-    {0x7F,0x02,0x04,0x02,0x7F}, // 'M'
-    {0x7F,0x04,0x08,0x10,0x7F}, // 'N'
-    {0x3E,0x41,0x41,0x41,0x3E}, // 'O'
-    {0x7F,0x09,0x09,0x09,0x06}, // 'P'
-    {0x3E,0x41,0x51,0x21,0x5E}, // 'Q'
-    {0x7F,0x09,0x19,0x29,0x46}, // 'R'
-    {0x46,0x49,0x49,0x49,0x31}, // 'S'
-    {0x01,0x01,0x7F,0x01,0x01}, // 'T'
-    {0x3F,0x40,0x40,0x40,0x3F}, // 'U'
-    {0x1F,0x20,0x40,0x20,0x1F}, // 'V'
-    {0x3F,0x40,0x38,0x40,0x3F}, // 'W'
-    {0x63,0x14,0x08,0x14,0x63}, // 'X'
-    {0x07,0x08,0x70,0x08,0x07}, // 'Y'
-    {0x61,0x51,0x49,0x45,0x43}, // 'Z'
-    {0x00,0x7F,0x41,0x41,0x00}, // '['
-    {0x02,0x04,0x08,0x10,0x20}, // '\'
-    {0x00,0x41,0x41,0x7F,0x00}, // ']'
-    {0x04,0x02,0x01,0x02,0x04}, // '^'
-    {0x40,0x40,0x40,0x40,0x40}, // '_'
-    {0x00,0x01,0x02,0x04,0x00}, // '`'
-    {0x20,0x54,0x54,0x54,0x78}, // 'a'
-    {0x7F,0x48,0x44,0x44,0x38}, // 'b'
-    {0x38,0x44,0x44,0x44,0x20}, // 'c'
-    {0x38,0x44,0x44,0x48,0x7F}, // 'd'
-    {0x38,0x54,0x54,0x54,0x18}, // 'e'
-    {0x08,0x7E,0x09,0x01,0x02}, // 'f'
-    {0x0C,0x52,0x52,0x52,0x3E}, // 'g'
-    {0x7F,0x08,0x04,0x04,0x78}, // 'h'
-    {0x00,0x44,0x7D,0x40,0x00}, // 'i'
-    {0x20,0x40,0x44,0x3D,0x00}, // 'j'
-    {0x7F,0x10,0x28,0x44,0x00}, // 'k'
-    {0x00,0x41,0x7F,0x40,0x00}, // 'l'
-    {0x7C,0x04,0x18,0x04,0x78}, // 'm'
-    {0x7C,0x08,0x04,0x04,0x78}, // 'n'
-    {0x38,0x44,0x44,0x44,0x38}, // 'o'
-    {0x7C,0x14,0x14,0x14,0x08}, // 'p'
-    {0x08,0x14,0x14,0x18,0x7C}, // 'q'
-    {0x7C,0x08,0x04,0x04,0x08}, // 'r'
-    {0x48,0x54,0x54,0x54,0x20}, // 's'
-    {0x04,0x3F,0x44,0x40,0x20}, // 't'
-    {0x3C,0x40,0x40,0x40,0x7C}, // 'u'
-    {0x1C,0x20,0x40,0x20,0x1C}, // 'v'
-    {0x3C,0x40,0x30,0x40,0x3C}, // 'w'
-    {0x44,0x28,0x10,0x28,0x44}, // 'x'
-    {0x0C,0x50,0x50,0x50,0x3C}, // 'y'
-    {0x44,0x64,0x54,0x4C,0x44}, // 'z'
-    {0x00,0x08,0x36,0x41,0x00}, // '{'
-    {0x00,0x00,0x7F,0x00,0x00}, // '|'
-    {0x00,0x41,0x36,0x08,0x00}, // '}'
-    {0x10,0x08,0x08,0x10,0x08}, // '~'
-};
+// ─── Font anti-aliased (atlanti pre-rasterizzati in aafont_data.h) ───────────
+// JetBrains Mono (numeri) + Inter (label/unità). Testo in alpha-blend RGB565.
+// Famiglie disponibili: AAF_HERO(46) AAF_GRADE(48,ExtraBold) AAF_VAL(34)
+//                       AAF_MED(26) AAF_NUMS(14) AAF_LABEL(13) AAF_LBLS(11)
 
-static void fb_char(int x, int y, char c, uint16_t col, int scale)
+static const aaglyph_t *aaf_glyph(const aafont_t *f, uint16_t cp)
 {
-    if (c < 0x20 || c > 0x7E) return;
-    int idx = c - 0x20;
-    for (int row = 0; row < 7; row++)
-    for (int col_b = 0; col_b < 5; col_b++) {
-        if (!((FONT5X7[idx][col_b] >> row) & 1)) continue;
-        for (int sy = 0; sy < scale; sy++)
-        for (int sx = 0; sx < scale; sx++) {
-            int px = x + col_b*scale + sx, py = y + row*scale + sy;
-            if (px>=0 && px<FB_W && py>=0 && py<FB_H) PX(px,py) = col;
-        }
-    }
+    for (uint16_t i = 0; i < f->n; i++) if (f->g[i].cp == cp) return &f->g[i];
+    return NULL;
 }
 
-static void fb_str(int x, int y, const char *s, uint16_t col, int scale)
+// UTF-8 minimale: ASCII + 2 byte (² ° ·). Avanza *s, ritorna il codepoint.
+static uint16_t utf8_next(const char **s)
 {
-    while (*s) { fb_char(x, y, *s++, col, scale); x += (5+1)*scale; }
+    const unsigned char *p = (const unsigned char *)*s;
+    uint16_t cp = *p;
+    if (cp < 0x80)                      { *s += 1; return cp; }
+    if ((cp & 0xE0) == 0xC0 && p[1])    { cp = ((cp & 0x1F) << 6) | (p[1] & 0x3F); *s += 2; return cp; }
+    *s += 1; return cp;
+}
+
+// Alpha-blend di fg su bg (RGB565 nativo, non byte-swapped).
+static inline uint16_t blend565(uint16_t bg, uint16_t fg, uint8_t a)
+{
+    if (a == 0)   return bg;
+    if (a >= 255) return fg;
+    uint32_t br = (bg >> 11) & 0x1F, bgc = (bg >> 5) & 0x3F, bb = bg & 0x1F;
+    uint32_t fr = (fg >> 11) & 0x1F, fgc = (fg >> 5) & 0x3F, fb = fg & 0x1F;
+    uint32_t ia = 255 - a;
+    uint32_t r = (fr * a + br * ia) / 255;
+    uint32_t g = (fgc * a + bgc * ia) / 255;
+    uint32_t b = (fb * a + bb * ia) / 255;
+    return (uint16_t)((r << 11) | (g << 5) | b);
+}
+
+static int aaf_text_w(const aafont_t *f, const char *s)
+{
+    int w = 0;
+    while (*s) { uint16_t cp = utf8_next(&s); const aaglyph_t *g = aaf_glyph(f, cp); if (g) w += g->adv; }
+    return w;
+}
+
+// estensione verticale dell'inchiostro (per il centraggio robusto dei valori)
+static void aaf_ink_v(const aafont_t *f, const char *s, int *top, int *bot)
+{
+    int t = 999, b = -999;
+    while (*s) {
+        uint16_t cp = utf8_next(&s);
+        const aaglyph_t *g = aaf_glyph(f, cp);
+        if (!g || g->h == 0) continue;
+        if (g->yoff < t)         t = g->yoff;
+        if (g->yoff + g->h > b)  b = g->yoff + g->h;
+    }
+    if (t > 900) { t = 0; b = 0; }
+    *top = t; *bot = b;
+}
+
+// y = riga ascender (top). Ritorna la x avanzata.
+static int fb_text(int x, int y, const char *s, const aafont_t *f, uint16_t col)
+{
+    while (*s) {
+        uint16_t cp = utf8_next(&s);
+        const aaglyph_t *g = aaf_glyph(f, cp);
+        if (!g) continue;
+        const uint8_t *bm = f->bm + g->off;
+        for (int gy = 0; gy < g->h; gy++) {
+            int py = y + g->yoff + gy;
+            if (py < 0 || py >= FB_H) continue;
+            const uint8_t *row = bm + gy * g->w;
+            for (int gx = 0; gx < g->w; gx++) {
+                uint8_t a = row[gx];
+                if (!a) continue;
+                int px = x + g->xoff + gx;
+                if (px < 0 || px >= FB_W) continue;
+                uint16_t *d = &PX(px, py);
+                *d = blend565(*d, col, a);
+            }
+        }
+        x += g->adv;
+    }
+    return x;
+}
+
+static void fb_text_cx(int cx, int y, const char *s, const aafont_t *f, uint16_t col)
+{ fb_text(cx - aaf_text_w(f, s) / 2, y, s, f, col); }
+
+static void fb_text_r(int xr, int y, const char *s, const aafont_t *f, uint16_t col)
+{ fb_text(xr - aaf_text_w(f, s), y, s, f, col); }
+
+// Centra l'inchiostro della stringa su (cx,cy) — per i valori "hero".
+static void fb_text_center(int cx, int cy, const char *s, const aafont_t *f, uint16_t col)
+{
+    int top, bot; aaf_ink_v(f, s, &top, &bot);
+    fb_text(cx - aaf_text_w(f, s) / 2, cy - (top + bot) / 2, s, f, col);
 }
 
 // ─── QR pairing state ────────────────────────────────────────────────────────
@@ -393,11 +344,11 @@ static uint16_t power_zone_col(uint16_t w, uint16_t ftp)
     if (!ftp || !w) return COL_MUTED;
     uint32_t pct = (uint32_t)w * 100u / ftp;
     if (pct < 55)  return COL_MUTED;
-    if (pct < 75)  return COL_TEAL;
+    if (pct < 75)  return COL_ACCENT;
     if (pct < 90)  return rgb(80, 200, 120);
-    if (pct < 105) return COL_AMBER;
+    if (pct < 105) return COL_POWER;
     if (pct < 120) return rgb(255, 120, 20);
-    return COL_RED;
+    return COL_ALERT;
 }
 
 static const char *power_zone_name(uint16_t w, uint16_t ftp)
@@ -442,29 +393,33 @@ static void fb_battery(int x, int y, uint8_t pct, uint16_t col)
     }
 }
 
-// ─── Status dots (4×, bottom-right): WiFi BLE ANT+ Pitot ─────────────────────
+// ─── Status dots (4×, riga dedicata centrata in basso): WiFi BLE ANT+ Pitot ──
 static void render_status_dots(const aerodrag_sensors_t *s)
 {
-    struct { int x; uint16_t col; char lbl; } dots[4] = {
-        { FB_W - 35, g_wifi_ready    ? COL_TEAL : COL_MUTED, 'W' },
-        { FB_W - 26, g_ble_connected ? COL_TEAL : COL_MUTED, 'B' },
-        { FB_W - 17, s->ant_valid    ? COL_TEAL : COL_MUTED, 'A' },
-        { FB_W -  8, s->pitot_valid  ? COL_TEAL : COL_MUTED, 'P' },
+    struct { uint16_t col; const char *lbl; } dots[4] = {
+        { g_wifi_ready    ? COL_ACCENT : COL_MUTED, "W" },
+        { g_ble_connected ? COL_ACCENT : COL_MUTED, "B" },
+        { s->ant_valid    ? COL_ACCENT : COL_MUTED, "A" },
+        { s->pitot_valid  ? COL_ACCENT : COL_MUTED, "P" },
     };
+    const int STEP = 30;                       // passo per item (dot + lettera)
+    int x0 = FB_W / 2 - (STEP * 4 - 12) / 2;    // riga centrata
+    int dy = FB_H - 9;                          // centro dei pallini
     for (int i = 0; i < 4; i++) {
-        fb_char(dots[i].x - 2, FB_H - 19, dots[i].lbl, COL_MUTED, 1);
-        fb_circle(dots[i].x,   FB_H -  8, 3, dots[i].col);
+        int dx = x0 + i * STEP;
+        fb_circle(dx, dy, 3, dots[i].col);
+        fb_text(dx + 7, FB_H - 16, dots[i].lbl, &AAF_LBLS, COL_MUTED);
     }
 }
 
-// ─── MM:SS helper ─────────────────────────────────────────────────────────────
-static void fb_time(int x, int y, uint32_t secs, uint16_t col, int scale)
+// ─── MM:SS helper (centrato su cx, top y) ─────────────────────────────────────
+static void fb_time_cx(int cx, int y, uint32_t secs, uint16_t col, const aafont_t *f)
 {
     char buf[6];
     uint32_t mm = secs / 60;
     if (mm > 99) mm = 99;
     snprintf(buf, sizeof(buf), "%02lu:%02lu", (unsigned long)mm, (unsigned long)(secs % 60));
-    fb_str(x, y, buf, col, scale);
+    fb_text_cx(cx, y, buf, f, col);
 }
 
 // ─── Screen state ─────────────────────────────────────────────────────────────
@@ -485,19 +440,26 @@ switch (g_screen) {
 
     // ── Pairing ───────────────────────────────────────────────────────────────
     case SCR_PAIRING: {
+        uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000LL);
+
+        // Wordmark: anello accent + "AeroDrag"
+        fb_circle(CX - 52, 16, 5, COL_ACCENT);
+        fb_circle(CX - 52, 16, 2, COL_BG);
+        fb_text(CX - 42, 9, "AeroDrag", &AAF_LABEL, COL_ACCENT);
+        fb_text_cx(CX, 30, "Inquadra per associare", &AAF_LBLS, COL_MUTED);
+
         if (!g_qr_valid) {
-            int w = (int)strlen(g_pairing_id) * 6;
-            fb_str((FB_W - w) / 2, CY - 4, g_pairing_id, COL_TEAL, 1);
+            fb_text_cx(CX, CY - 8, g_pairing_id, &AAF_LABEL, COL_ACCENT);
             break;
         }
         int sz  = qrcodegen_getSize(g_qr_cache);
-        const int SCALE = 7;
+        const int SCALE = 6;
         const int PAD   = 10;
         int qr_px  = sz * SCALE;
         int rect_w = qr_px + 2 * PAD;
         int rect_h = qr_px + 2 * PAD;
         int rx = (FB_W - rect_w) / 2;
-        int ry = 20;
+        int ry = 52;
         int ox = rx + PAD;
         int oy = ry + PAD;
 
@@ -518,15 +480,15 @@ switch (g_screen) {
             }
         }
 
-        {
-            int id_len = (int)strlen(g_pairing_id);
-            int id_w   = id_len * 6;
-            int id_x   = (FB_W - id_w) / 2;
-            int id_y   = ry + rect_h + 8;
-            fb_str(id_x, id_y, g_pairing_id, COL_MUTED, 1);
-        }
+        fb_text_cx(CX, ry + rect_h + 10, g_pairing_id, &AAF_LABEL, COL_TEXTDIM);
 
-        fb_circle(CX, ry + rect_h + 30, 4, COL_RED);
+        // Stato "In attesa…" con dot lampeggiante
+        int sy = ry + rect_h + 34;
+        const char *wait = "In attesa...";
+        int ww = aaf_text_w(&AAF_LBLS, wait);
+        int wx = CX - (ww + 14) / 2;
+        if ((now_ms / 500) % 2 == 0) fb_circle(wx, sy + 5, 4, COL_ALERT);
+        fb_text(wx + 12, sy, wait, &AAF_LBLS, COL_TEXTDIM);
         break;
     }
 
@@ -545,78 +507,96 @@ switch (g_screen) {
         if (pct < 0.0f) pct = 0.0f;
         if (pct > 1.0f) pct = 1.0f;
 
-        uint16_t arc_col = (pct < 0.33f) ? COL_TEAL
-                         : (pct < 0.67f) ? COL_AMBER : COL_RED;
+        uint16_t arc_col = (pct < 0.33f) ? COL_ACCENT
+                         : (pct < 0.67f) ? COL_POWER : COL_ALERT;
 
-        fb_arc(CX, CY, 110, 12, -225.0f, 45.0f, COL_SURFACE);
+        // Arco gauge: apertura in basso; riempimento da basso-sinistra → destra
+        fb_arc(CX, CY, 110, 12, -45.0f, 225.0f, COL_TRACK);
         if (valid && pct > 0.005f)
-            fb_arc(CX, CY, 110, 12, -225.0f, -225.0f + pct * 270.0f, arc_col);
+            fb_arc(CX, CY, 110, 12, 225.0f - pct * 270.0f, 225.0f, arc_col);
 
         // Session best — white tick on arc
         if (g_session_best_cda < 9000.0f) {
             float bp = (g_session_best_cda - 0.18f) / 0.20f;
             if (bp < 0.0f) bp = 0.0f;
             if (bp > 1.0f) bp = 1.0f;
-            float ba = -225.0f + bp * 270.0f;
+            float ba = 225.0f - bp * 270.0f;
             fb_arc(CX, CY, 110, 12, ba - 1.5f, ba + 1.5f, rgb(255,255,255));
         }
 
-        fb_str((FB_W - 36) / 2, 8, "CdA", COL_MUTED, 2);
+        // Header: "CdA" a sinistra, batteria a destra
+        fb_text(12, 8, "CdA", &AAF_LABEL, COL_MUTED);
+        {
+            uint16_t bat_col = s->battery_pct > 25 ? COL_ACCENT : COL_ALERT;
+            char bat_str[6];
+            snprintf(bat_str, sizeof(bat_str), "%d%%", s->battery_pct);
+            fb_battery(FB_W - 26, 9, s->battery_pct, bat_col);
+            fb_text_r(FB_W - 30, 8, bat_str, &AAF_LABEL, bat_col);
+        }
 
-        // Grade (hero)
+        // Grade (hero) + valore + unità, centrati nell'anello
         const char *grade     = valid ? cda_grade(cda) : "--";
         uint16_t    grade_col = valid ? arc_col : COL_MUTED;
-        int gw = (int)strlen(grade) * 6 * 4;
-        fb_str((FB_W - gw) / 2, CY - 40, grade, grade_col, 4);
+        fb_text_center(CX, CY - 30, grade, &AAF_GRADE, grade_col);
 
         if (valid) {
             char buf[8];
             snprintf(buf, sizeof(buf), "0.%03d", (int)(cda * 1000) % 1000);
-            int vw = (int)strlen(buf) * 12;
-            fb_str((FB_W - vw) / 2, CY + 8, buf, COL_TEXT, 2);
-            fb_str(CX - 12, CY + 26, "m2", COL_MUTED, 2);
+            fb_text_center(CX, CY + 18, buf, &AAF_VAL, COL_TEXT);
+            fb_text_cx(CX, CY + 36, "m²", &AAF_LABEL, COL_MUTED);
         } else {
-            fb_str(CX - 18, CY + 8, "---", COL_MUTED, 2);
+            fb_text_center(CX, CY + 18, "---", &AAF_VAL, COL_MUTED);
         }
 
-        // "NEW BEST" blink
-        if (now_ms < g_best_flash_end && (now_ms / 500) % 2 == 0) {
-            int nbw = (int)strlen("NEW BEST") * 12;
-            fb_str((FB_W - nbw) / 2, CY + 44, "NEW BEST", COL_TEAL, 2);
+        // Chip AERO (pctAero) sopra il divisore — NON dentro l'anello
+        if (valid) {
+            char num[6];
+            snprintf(num, sizeof(num), "%d", p->pct_aero);
+            int wl = aaf_text_w(&AAF_LBLS, "AERO ");
+            int wn = aaf_text_w(&AAF_MED, num);
+            int wp = aaf_text_w(&AAF_LBLS, "%");
+            int x  = CX - (wl + wn + wp) / 2;
+            fb_text(x, CY + 64, "AERO ", &AAF_LBLS, COL_MUTED);
+            x = fb_text(x + wl, CY + 60, num, &AAF_MED, COL_POWER);
+            fb_text(x, CY + 64, "%", &AAF_LBLS, COL_MUTED);
         }
 
-        // Bottom info bar: speed | wind | power
-        int bby = FB_H - 34;
-        if (valid && p->v_ground_ms > 0.5f) {
-            char spd[6];
-            snprintf(spd, sizeof(spd), "%d", (int)(p->v_ground_ms * 3.6f));
-            fb_str(8, bby, spd, COL_TEXT, 2);
-            fb_str(8 + (int)strlen(spd) * 12, bby + 8, "km/h", COL_MUTED, 2);
-        }
-        if (s->pitot_valid && s->pitot_pa > 0.3f) {
-            float v_air = sqrtf(2.0f * s->pitot_pa / 1.225f) * 3.6f;
-            char wa[6];
-            snprintf(wa, sizeof(wa), "%d", (int)v_air);
-            int wx = CX - (int)strlen(wa) * 6;
-            fb_str(wx, bby, wa, COL_TEAL, 2);
-            fb_str(wx + (int)strlen(wa) * 12, bby + 8, "wind", COL_MUTED, 2);
-        }
-        if (s->power_w > 0) {
-            char pw[6];
-            snprintf(pw, sizeof(pw), "%d", s->power_w);
-            int px = FB_W - (int)strlen(pw) * 12 - 14;
-            fb_str(px, bby, pw, COL_AMBER, 2);
-            fb_str(px + (int)strlen(pw) * 12, bby + 8, "W", COL_MUTED, 2);
+        // Chip "▾ NEW BEST" lampeggiante (sopra il chip AERO)
+        if (now_ms < g_best_flash_end && (now_ms / 400) % 2 == 0) {
+            const char *nb = "NEW BEST";
+            int nbw = aaf_text_w(&AAF_LBLS, nb);
+            int nx  = CX - (nbw + 12) / 2;
+            // triangolino verso il basso
+            for (int dy = 0; dy < 5; dy++)
+                fb_hline(nx + dy, nx + 8 - dy, CY + 46 + dy, COL_POSITIVE);
+            fb_text(nx + 12, CY + 44, nb, &AAF_LBLS, COL_POSITIVE);
         }
 
-        // Battery icon top-right
+        // Divisore
+        fb_hline(24, FB_W - 24, FB_H - 56, COL_PANEL);
+
+        // Barra inferiore: speed | wind | power  (numero JBMono + unità Inter)
+        int bvy = FB_H - 50, bly = FB_H - 30;
         {
-            uint16_t bat_col = s->battery_pct > 25 ? COL_TEAL : COL_RED;
-            char bat_str[6];
-            snprintf(bat_str, sizeof(bat_str), "%d%%", s->battery_pct);
-            int bpw = (int)strlen(bat_str) * 12;
-            fb_str(FB_W - 24 - bpw - 3, 8, bat_str, bat_col, 2);
-            fb_battery(FB_W - 24, 8, s->battery_pct, bat_col);
+            char spd[6] = "--";
+            if (valid && p->v_ground_ms > 0.5f) snprintf(spd, sizeof(spd), "%d", (int)(p->v_ground_ms * 3.6f));
+            fb_text_cx(52, bvy, spd, &AAF_MED, COL_TEXT);
+            fb_text_cx(52, bly, "km/h", &AAF_LBLS, COL_MUTED);
+        }
+        {
+            char wa[6] = "--";
+            if (s->pitot_valid && s->pitot_pa > 0.3f) {
+                float v_air = sqrtf(2.0f * s->pitot_pa / 1.225f) * 3.6f;
+                snprintf(wa, sizeof(wa), "%d", (int)v_air);
+            }
+            fb_text_cx(CX, bvy, wa, &AAF_MED, COL_ACCENT);
+            fb_text_cx(CX, bly, "wind", &AAF_LBLS, COL_MUTED);
+        }
+        {
+            char pw[6] = "--";
+            if (s->power_w > 0) snprintf(pw, sizeof(pw), "%d", s->power_w);
+            fb_text_cx(FB_W - 52, bvy, pw, &AAF_MED, COL_POWER);
+            fb_text_cx(FB_W - 52, bly, "W", &AAF_LBLS, COL_MUTED);
         }
         render_status_dots(s);
         break;
@@ -624,67 +604,72 @@ switch (g_screen) {
 
     // ── Lap / Session timer ───────────────────────────────────────────────────
     case SCR_TIMER: {
-        fb_str((FB_W - 36) / 2, 18, "LAP", COL_MUTED, 2);
+        fb_text_cx(CX, 20, "LAP", &AAF_LABEL, COL_MUTED);
         {
             char nbuf[6];
             snprintf(nbuf, sizeof(nbuf), "%d", g_lap_num_display);
-            int nw = (int)strlen(nbuf) * 30;
-            fb_str((FB_W - nw) / 2, 40, nbuf, COL_TEAL, 5);
+            fb_text_center(CX, 66, nbuf, &AAF_HERO, COL_ACCENT);
         }
         {
-            uint16_t lap_col = (g_lap_elapsed_s < 60) ? COL_TEAL : COL_AMBER;
-            fb_time((FB_W - 5*24) / 2, 95, g_lap_elapsed_s, lap_col, 4);
+            uint16_t lap_col = (g_lap_elapsed_s < 60) ? COL_ACCENT : COL_POWER;
+            fb_time_cx(CX, 110, g_lap_elapsed_s, lap_col, &AAF_VAL);
         }
-        fb_str((FB_W - 18) / 2, 130, "LAP", COL_MUTED, 1);
-        fb_hline(30, FB_W - 30, 150, COL_SURFACE);
-        fb_hline(30, FB_W - 30, 151, COL_SURFACE);
-        fb_str((FB_W - 18) / 2, 162, "TOT", COL_MUTED, 1);
-        fb_time((FB_W - 5*18) / 2, 174, g_session_elapsed_s, COL_TEXT, 3);
+        fb_hline(30, FB_W - 30, 162, COL_PANEL);
+        fb_text_cx(CX, 172, "TOT", &AAF_LBLS, COL_MUTED);
+        fb_time_cx(CX, 188, g_session_elapsed_s, COL_TEXT, &AAF_MED);
         render_status_dots(s);
         break;
     }
 
     // ── Speed ─────────────────────────────────────────────────────────────────
     case SCR_SPEED: {
-        fb_str((FB_W - 60) / 2, 8, "Speed", COL_MUTED, 2);
+        fb_text(12, 8, "SPEED", &AAF_LABEL, COL_MUTED);
 
         float spd_kmh = s->gps_valid    ? s->speed_ms * 3.6f
                       : (p && p->valid) ? p->v_ground_ms * 3.6f
                       : 0.0f;
         char spd_buf[6];
         snprintf(spd_buf, sizeof(spd_buf), "%d", (int)spd_kmh);
-        int sw = (int)strlen(spd_buf) * 36;
-        fb_str((FB_W - sw) / 2, CY - 22, spd_buf, COL_TEXT, 6);
-
-        int km_w = 4 * 12;
-        fb_str((FB_W - km_w) / 2, CY + 26, "km/h", COL_MUTED, 2);
+        fb_text_center(CX, CY - 26, spd_buf, &AAF_HERO, COL_SPEED);
+        fb_text_cx(CX, CY + 6, "km/h", &AAF_LABEL, COL_MUTED);
 
         if (s->pitot_valid && s->pitot_pa > 0.3f) {
             float v_air  = sqrtf(2.0f * s->pitot_pa / 1.225f) * 3.6f;
             float delta  = spd_kmh - v_air;
-            char  air[20], wind[20];
-            snprintf(air,  sizeof(air),  "Air: %d km/h",  (int)v_air);
-            snprintf(wind, sizeof(wind), "Wind: %+d km/h", (int)delta);
-            int aw = (int)strlen(air) * 12, ww = (int)strlen(wind) * 12;
-            fb_str((FB_W - aw) / 2, CY + 44, air,  COL_TEAL, 2);
-            uint16_t wcol = (delta >  2.0f) ? COL_RED
-                          : (delta < -2.0f) ? COL_TEAL : COL_MUTED;
-            fb_str((FB_W - ww) / 2, CY + 60, wind, wcol, 2);
+            char  air[6], wind[6];
+            snprintf(air,  sizeof(air),  "%d",  (int)v_air);
+            snprintf(wind, sizeof(wind), "%+d", (int)delta);
+            uint16_t wcol = (delta >  2.0f) ? COL_ALERT
+                          : (delta < -2.0f) ? COL_ACCENT : COL_MUTED;
+            // "Air  NN km/h" (parola Inter + numero JBMono + unità Inter)
+            int wa = aaf_text_w(&AAF_LBLS, "Air ") + aaf_text_w(&AAF_NUMS, air) + aaf_text_w(&AAF_LBLS, " km/h");
+            int ax = CX - wa / 2;
+            ax = fb_text(ax, CY + 40, "Air ", &AAF_LBLS, COL_MUTED);
+            ax = fb_text(ax, CY + 38, air, &AAF_NUMS, COL_ACCENT);
+            fb_text(ax, CY + 40, " km/h", &AAF_LBLS, COL_MUTED);
+            // "Wind ±NN km/h"
+            int ww = aaf_text_w(&AAF_LBLS, "Wind ") + aaf_text_w(&AAF_NUMS, wind) + aaf_text_w(&AAF_LBLS, " km/h");
+            int wx = CX - ww / 2;
+            wx = fb_text(wx, CY + 60, "Wind ", &AAF_LBLS, COL_MUTED);
+            wx = fb_text(wx, CY + 58, wind, &AAF_NUMS, wcol);
+            fb_text(wx, CY + 60, " km/h", &AAF_LBLS, COL_MUTED);
         }
 
         if (s->hr_bpm > 0) {
             char hr[6];
             snprintf(hr, sizeof(hr), "%d", s->hr_bpm);
-            fb_str(FB_W - (int)strlen(hr) * 12 - 4, 8, hr, COL_RED, 2);
-            fb_str(FB_W - 24, 24, "bpm", COL_MUTED, 2);
+            fb_text_r(FB_W - 10, 8, hr, &AAF_MED, COL_ALERT);
+            fb_text_r(FB_W - 10, 34, "bpm", &AAF_LBLS, COL_MUTED);
         }
 
         if (s->power_w > 0) {
-            char pw[12];
-            snprintf(pw, sizeof(pw), "%d W", s->power_w);
-            int pw_w = (int)strlen(pw) * 12;
-            fb_str((FB_W - pw_w) / 2, FB_H - 44,
-                   pw, power_zone_col(s->power_w, g_rider_ftp_w), 2);
+            char pw[8];
+            snprintf(pw, sizeof(pw), "%d", s->power_w);
+            uint16_t pcol = power_zone_col(s->power_w, g_rider_ftp_w);
+            int pwn = aaf_text_w(&AAF_MED, pw), pwu = aaf_text_w(&AAF_LABEL, " W");
+            int px  = CX - (pwn + pwu) / 2;
+            px = fb_text(px, FB_H - 52, pw, &AAF_MED, pcol);
+            fb_text(px, FB_H - 48, " W", &AAF_LABEL, COL_MUTED);
         }
         render_status_dots(s);
         break;
@@ -696,17 +681,22 @@ switch (g_screen) {
         uint16_t    zone_col  = power_zone_col(s->power_w, g_rider_ftp_w);
         const char *zone_name = power_zone_name(s->power_w, g_rider_ftp_w);
 
-        snprintf(buf, sizeof(buf), "%d W", s->power_w);
-        int pw_w = (int)strlen(buf) * 18;
-        fb_str((FB_W - pw_w) / 2, 10, buf, zone_col, 3);
-
-        int znw = (int)strlen(zone_name) * 12;
-        fb_str((FB_W - znw) / 2, 38, zone_name, zone_col, 2);
+        // "238 W" hero (numero JBMono + unità Inter)
+        snprintf(buf, sizeof(buf), "%d", s->power_w);
+        {
+            int pn = aaf_text_w(&AAF_HERO, buf), pu = aaf_text_w(&AAF_LABEL, " W");
+            int px = CX - (pn + pu) / 2;
+            px = fb_text(px, 12, buf, &AAF_HERO, zone_col);
+            fb_text(px, 30, " W", &AAF_LABEL, COL_MUTED);
+        }
+        fb_text_cx(CX, 64, zone_name, &AAF_LABEL, zone_col);
 
         if (g_rider_mass_kg > 0.0f && s->power_w > 0) {
-            snprintf(buf, sizeof(buf), "%.1f W/kg", s->power_w / g_rider_mass_kg);
-            int wkw = (int)strlen(buf) * 12;
-            fb_str((FB_W - wkw) / 2, 56, buf, COL_MUTED, 2);
+            snprintf(buf, sizeof(buf), "%.1f", s->power_w / g_rider_mass_kg);
+            int wn = aaf_text_w(&AAF_MED, buf), wu = aaf_text_w(&AAF_LBLS, " W/kg");
+            int wx = CX - (wn + wu) / 2;
+            wx = fb_text(wx, 84, buf, &AAF_MED, COL_TEXT);
+            fb_text(wx, 90, " W/kg", &AAF_LBLS, COL_MUTED);
         }
 
         if (p && p->valid && s->power_w > 0) {
@@ -715,35 +705,31 @@ switch (g_screen) {
             uint8_t pr  = (pr_f > 100.0f) ? 100 : (pr_f < 0.0f) ? 0 : (uint8_t)pr_f;
             uint8_t po  = (pa + pr < 100) ? (100 - pa - pr) : 0;
 
-            const int BH = 100, BY = 84, BW = 30, GAP = 14;
+            const int BH = 96, BY = 128, BW = 34, GAP = 18;
             int bx = (FB_W - (3*BW + 2*GAP)) / 2;
 
             struct { uint8_t pct; uint16_t col; const char *lbl; } bars[3] = {
-                {pa, COL_RED,   "Aero"},
-                {pr, COL_TEAL,  "Roll"},
+                {pa, COL_POWER, "Aero"},
+                {pr, COL_ACCENT,  "Roll"},
                 {po, COL_MUTED, "Other"},
             };
             for (int b = 0; b < 3; b++) {
                 int filled = BH * bars[b].pct / 100;
                 for (int y = BY; y < BY + BH; y++)
                     for (int x = bx; x < bx + BW; x++)
-                        if (x>=0&&x<FB_W&&y>=0&&y<FB_H) PX(x,y) = COL_SURFACE;
+                        if (x>=0&&x<FB_W&&y>=0&&y<FB_H) PX(x,y) = COL_PANEL;
                 for (int y = BY + BH - filled; y < BY + BH; y++)
                     for (int x = bx; x < bx + BW; x++)
                         if (x>=0&&x<FB_W&&y>=0&&y<FB_H) PX(x,y) = bars[b].col;
 
-                int lw = (int)strlen(bars[b].lbl) * 6;
-                fb_str(bx + (BW - lw) / 2, BY - 14, bars[b].lbl, bars[b].col, 1);
-
+                fb_text_cx(bx + BW / 2, BY - 16, bars[b].lbl, &AAF_LBLS, COL_MUTED);
                 snprintf(buf, sizeof(buf), "%d%%", bars[b].pct);
-                int buw = (int)strlen(buf) * 6;
-                fb_str(bx + (BW - buw) / 2, BY + BH + 6, buf, bars[b].col, 1);
+                fb_text_cx(bx + BW / 2, BY + BH + 6, buf, &AAF_NUMS, bars[b].col);
 
                 bx += BW + GAP;
             }
         } else {
-            int dw = 3 * 12;
-            fb_str((FB_W - dw) / 2, CY, "---", COL_MUTED, 2);
+            fb_text_center(CX, CY + 20, "---", &AAF_VAL, COL_MUTED);
         }
         render_status_dots(s);
         break;
@@ -754,10 +740,10 @@ switch (g_screen) {
         char buf[20];
 
         // Grid dividers
-        fb_hline(0, FB_W - 1, 159, COL_SURFACE);
-        fb_hline(0, FB_W - 1, 160, COL_SURFACE);
+        fb_hline(0, FB_W - 1, 159, COL_PANEL);
+        fb_hline(0, FB_W - 1, 160, COL_PANEL);
         for (int y = 0; y < FB_H; y++)
-            if (y >= 0 && y < FB_H) { PX(119,y) = COL_SURFACE; PX(120,y) = COL_SURFACE; }
+            if (y >= 0 && y < FB_H) { PX(119,y) = COL_PANEL; PX(120,y) = COL_PANEL; }
 
         // TL — CdA
         {
@@ -766,51 +752,51 @@ switch (g_screen) {
             float    cpct = cda_valid ? (cda_val - 0.18f) / 0.20f : 0.0f;
             if (cpct < 0.0f) cpct = 0.0f;
             if (cpct > 1.0f) cpct = 1.0f;
-            uint16_t cda_col = (cpct < 0.33f) ? COL_TEAL
-                             : (cpct < 0.67f) ? COL_AMBER : COL_RED;
+            uint16_t cda_col = (cpct < 0.33f) ? COL_ACCENT
+                             : (cpct < 0.67f) ? COL_POWER : COL_ALERT;
             if (!cda_valid) cda_col = COL_MUTED;
 
-            fb_str(10, 10, "CdA", COL_MUTED, 2);
+            fb_text(12, 12, "CdA", &AAF_LBLS, COL_MUTED);
             if (cda_valid) {
-                snprintf(buf, sizeof(buf), "0.%03d", (int)(cda_val * 1000) % 1000);
-                fb_str(10, 28, buf, cda_col, 3);
-                fb_str(10, 72, cda_grade(cda_val), cda_col, 2);
+                snprintf(buf, sizeof(buf), ".%03d", (int)(cda_val * 1000) % 1000);
+                fb_text(12, 36, buf, &AAF_MED, cda_col);
+                fb_text(12, 96, cda_grade(cda_val), &AAF_MED, cda_col);
             } else {
-                fb_str(10, 28, "---", COL_MUTED, 3);
+                fb_text(12, 36, "---", &AAF_MED, COL_MUTED);
             }
         }
 
         // TR — Heart Rate
-        fb_str(130, 10, "HR", COL_MUTED, 2);
+        fb_text(132, 12, "HR", &AAF_LBLS, COL_MUTED);
         {
-            uint16_t hr_col = s->hr_bpm > 0 ? COL_RED : COL_MUTED;
+            uint16_t hr_col = s->hr_bpm > 0 ? COL_ALERT : COL_MUTED;
             snprintf(buf, sizeof(buf), "%d", s->hr_bpm > 0 ? s->hr_bpm : 0);
-            fb_str(130, 28, buf, hr_col, 4);
-            fb_str(130, 64, "bpm", COL_MUTED, 2);
-            fb_circle(195, 108, 5, hr_col);
+            fb_text(132, 36, buf, &AAF_MED, hr_col);
+            fb_text(132, 96, "bpm", &AAF_LBLS, COL_MUTED);
+            fb_circle(208, 100, 5, hr_col);
         }
 
         // BL — Cadence
-        fb_str(10, 172, "Cadence", COL_MUTED, 2);
+        fb_text(12, 174, "Cadence", &AAF_LBLS, COL_MUTED);
         {
-            uint16_t cad_col = s->cadence_rpm > 0 ? COL_AMBER : COL_MUTED;
+            uint16_t cad_col = s->cadence_rpm > 0 ? COL_POWER : COL_MUTED;
             snprintf(buf, sizeof(buf), "%d", s->cadence_rpm > 0 ? s->cadence_rpm : 0);
-            fb_str(10, 190, buf, cad_col, 4);
-            fb_str(10, 226, "rpm", COL_MUTED, 2);
+            fb_text(12, 198, buf, &AAF_MED, cad_col);
+            fb_text(12, 258, "rpm", &AAF_LBLS, COL_MUTED);
         }
 
         // BR — Power
         {
             uint16_t pwr_col = power_zone_col(s->power_w, g_rider_ftp_w);
-            fb_str(130, 172, "Power", COL_MUTED, 2);
+            fb_text(132, 174, "Power", &AAF_LBLS, COL_MUTED);
             snprintf(buf, sizeof(buf), "%d", s->power_w > 0 ? s->power_w : 0);
-            fb_str(130, 190, buf, pwr_col, 4);
-            fb_str(130, 226, "W", COL_MUTED, 2);
+            fb_text(132, 198, buf, &AAF_MED, pwr_col);
+            fb_text(132, 258, "W", &AAF_LBLS, COL_MUTED);
             if (s->power_w > 0) {
                 const char *zn = power_zone_name(s->power_w, g_rider_ftp_w);
-                fb_str(130, 250, zn, pwr_col, 1);
+                fb_text(132, 278, zn, &AAF_LBLS, pwr_col);
             }
-            fb_circle(195, 295, 4, s->ant_valid ? COL_TEAL : COL_MUTED);
+            fb_circle(208, 282, 5, s->ant_valid ? COL_ACCENT : COL_MUTED);
         }
         break;
     }
@@ -822,18 +808,18 @@ switch (g_screen) {
     {
         uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000LL);
         if (g_toast_end_ms > now_ms && g_toast_msg[0]) {
-            int msg_w = (int)strlen(g_toast_msg) * 12;
+            int msg_w = aaf_text_w(&AAF_LABEL, g_toast_msg);
             int box_w = msg_w + 24, box_h = 30;
             int bx = (FB_W - box_w) / 2, by = (FB_H - box_h) / 2;
             for (int yy = by - 2; yy < by + box_h + 2; yy++)
                 for (int xx = bx - 2; xx < bx + box_w + 2; xx++)
                     if (xx >= 0 && xx < FB_W && yy >= 0 && yy < FB_H)
-                        PX(xx, yy) = COL_TEAL;
+                        PX(xx, yy) = COL_ACCENT;
             for (int yy = by; yy < by + box_h; yy++)
                 for (int xx = bx; xx < bx + box_w; xx++)
                     if (xx >= 0 && xx < FB_W && yy >= 0 && yy < FB_H)
                         PX(xx, yy) = COL_BG;
-            fb_str((FB_W - msg_w) / 2, by + 8, g_toast_msg, COL_TEAL, 2);
+            fb_text_cx(FB_W / 2, by + 9, g_toast_msg, &AAF_LABEL, COL_ACCENT);
         }
     }
     display_flush();

@@ -13,23 +13,28 @@
 #define LCD_W           240    // portrait width
 #define LCD_H           320    // portrait height
 #define LCD_SPI_HOST    SPI2_HOST
-#define LCD_SPI_CLK_HZ  (40 * 1000 * 1000)   // ST7789T3 max 40MHz
+#define LCD_SPI_CLK_HZ  (10 * 1000 * 1000)   // ST7789 via esp_lcd — 40MHz fallisce la DMA SPI da PSRAM
 
-// ── Touch (CST816S, I2C0) ────────────────────────────────────────────────────
-#define PIN_TOUCH_SDA     1    // TP_SDA (confirmed schematic: NLIO1 NLTP0SDA)
+// ── Touch (CST328, bus I2C fisico dedicato su GPIO1/3) ───────────────────────
+// NON usato dal firmware. NOTA: l'ESP32-S3 ha solo 2 controller I2C, entrambi
+// occupati (IMU su I2C_NUM_0, pitot su I2C_NUM_1): per usare il touch servirà
+// condividere un controller o fare bit-bang. Il CST328 resta in reset finché
+// TP_RST (GPIO2) non viene pilotato alto.
+#define PIN_TOUCH_SDA     1    // TP_SDA
 #define PIN_TOUCH_SCL     3    // TP_SCL
 #define PIN_TOUCH_INT     4    // TP_INT
 #define PIN_TOUCH_RST     2    // TP_RST
-#define TOUCH_I2C_PORT  I2C_NUM_0
-#define TOUCH_I2C_ADDR  0x15
+#define TOUCH_I2C_ADDR  0x1A   // CST328
 
-// ── IMU QMI8658C (I2C0, shares bus with touch on GPIO1/3) ────────────────────
-#define PIN_IMU_SDA       1    // shared with touch on I2C0
-#define PIN_IMU_SCL       3
-#define PIN_IMU_INT1      13
-#define PIN_IMU_INT2      12
+// ── IMU QMI8658C (bus I2C dedicato su GPIO11/10, condiviso con l'RTC) ────────
+// Pin verificati con scan I2C sul prototipo + libreria WS_ESP32_Touch28:
+// il bus IMU/RTC è SEPARATO dal bus touch (GPIO1/3), dove l'IMU non risponde.
+#define PIN_IMU_SDA      11
+#define PIN_IMU_SCL      10
+#define PIN_IMU_INT1     13
+#define PIN_IMU_INT2     12
 #define IMU_I2C_PORT    I2C_NUM_0
-#define IMU_I2C_ADDR    0x6B   // AD0 high on Waveshare board
+#define IMU_I2C_ADDR    0x6B   // probe automatico anche su 0x6A in qmi8658_init
 
 // ── Pitot sensor SDP810 (I2C1 — separate bus, external wiring) ───────────────
 #define PIN_PITOT_SDA    15    // available on header

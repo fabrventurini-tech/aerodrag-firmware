@@ -90,8 +90,6 @@ static volatile int64_t g_lap_start_us     = -1;
 #define I2C1_LOCK()       xSemaphoreTake(g_i2c1_mutex, portMAX_DELAY)
 #define I2C1_UNLOCK()     xSemaphoreGive(g_i2c1_mutex)
 
-static void ble_lap_notify_cb(void) { ble_notify_ant(0xFFFF, 0, 0); }
-
 static esp_err_t i2c_init_bus(i2c_port_t port, int sda, int scl, uint32_t hz)
 {
     i2c_config_t cfg = {
@@ -107,19 +105,51 @@ static esp_err_t i2c_init_bus(i2c_port_t port, int sda, int scl, uint32_t hz)
     return i2c_driver_install(port, I2C_MODE_MASTER, 0, 0, 0);
 }
 
+// Scan diagnostico del bus: una riga di log con gli indirizzi che ACK-ano.
+// Permette di distinguere "chip assente" (bus con altri dispositivi) da
+// "pin sbagliati" (bus completamente vuoto).
+static void i2c_scan_bus(i2c_port_t port, const char *name)
+{
+    char list[96] = {0};
+    int  found    = 0;
+    for (uint8_t a = 0x08; a <= 0x77; a++) {
+        i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+        i2c_master_start(cmd);
+        i2c_master_write_byte(cmd, (a << 1) | I2C_MASTER_WRITE, true);
+        i2c_master_stop(cmd);
+        esp_err_t r = i2c_master_cmd_begin(port, cmd, pdMS_TO_TICKS(20));
+        i2c_cmd_link_delete(cmd);
+        if (r == ESP_OK && found < 10) {
+            size_t off = strlen(list);
+            snprintf(list + off, sizeof(list) - off, " 0x%02X", a);
+            found++;
+        }
+    }
+    ESP_LOGI(TAG, "I2C scan %s: %d dispositivi%s%s",
+             name, found, found ? ":" : "", found ? list : "");
+}
+
 // ─── Sensor drivers ─────────────────────────────────────────────────────────────────────────────
 static sdp810_t  g_pitot = {0};
 static qmi8658_t g_imu   = {0};
 static battery_t g_bat   = {0};
 
 static int64_t g_last_speed_us = 0;
+static int64_t g_last_power_us = 0;
+static int64_t g_last_hr_us    = 0;
+static int64_t g_last_cad_us   = 0;
 #define BLE_SPEED_STALE_US  (5LL * 1000 * 1000)
 
 // ─── Task: Pitot + IMU @ 10 Hz ───────────────────────────────────────────────────────────────────────
+// Letture I2C fallite consecutive prima di invalidare il sensore (~1 s a 10 Hz)
+#define SENSOR_FAIL_LIMIT 10
+
 static void task_pitot_imu(void *arg)
 {
     TickType_t wake = xTaskGetTickCount();
     uint8_t env_divider = 0;
+    uint8_t pitot_fail  = 0;
+    uint8_t imu_fail    = 0;
 
     while (1) {
         vTaskDelayUntil(&wake, pdMS_TO_TICKS(100));
@@ -141,6 +171,38 @@ static void task_pitot_imu(void *arg)
                 ESP_LOGW("ble_sens", "Speed BLE stale — invalidato (>5s)");
             }
 
+            if (ext.status & BLE_SENS_POWER) {
+                g_last_power_us = now_us;
+            } else if (g_last_power_us > 0 &&
+                       (now_us - g_last_power_us) > BLE_SPEED_STALE_US) {
+                SENSORS_LOCK();
+                g_sensors.ant_valid = false;
+                g_sensors.power_w   = 0;
+                SENSORS_UNLOCK();
+                g_last_power_us = 0;
+                ESP_LOGW("ble_sens", "Power BLE stale — invalidato (>5s)");
+            }
+
+            if (ext.status & BLE_SENS_HR) {
+                g_last_hr_us = now_us;
+            } else if (g_last_hr_us > 0 &&
+                       (now_us - g_last_hr_us) > BLE_SPEED_STALE_US) {
+                SENSORS_LOCK();
+                g_sensors.hr_bpm = 0;
+                SENSORS_UNLOCK();
+                g_last_hr_us = 0;
+            }
+
+            if (ext.status & BLE_SENS_CAD) {
+                g_last_cad_us = now_us;
+            } else if (g_last_cad_us > 0 &&
+                       (now_us - g_last_cad_us) > BLE_SPEED_STALE_US) {
+                SENSORS_LOCK();
+                g_sensors.cadence_rpm = 0;
+                SENSORS_UNLOCK();
+                g_last_cad_us = 0;
+            }
+
             SENSORS_LOCK();
             if (ext.status & BLE_SENS_POWER) {
                 g_sensors.power_w   = ext.power_w;
@@ -160,7 +222,7 @@ static void task_pitot_imu(void *arg)
         I2C1_LOCK();
         esp_err_t pitot_ret = sdp810_read(&g_pitot);
         I2C1_UNLOCK();
-        ESP_LOGI("PITOT", "Pa=%.3f ret=%d", g_pitot.pressure_pa, pitot_ret);
+        ESP_LOGD("PITOT", "Pa=%.3f ret=%d", g_pitot.pressure_pa, pitot_ret);
 
         float imu_pitch = 0, imu_roll = 0, imu_temp = 0;
         bool  imu_ok = false;
@@ -171,22 +233,35 @@ static void task_pitot_imu(void *arg)
             imu_ok    = true;
         }
 
+        bool pitot_lost = false, imu_lost = false;
+
         SENSORS_LOCK();
         if (pitot_ret == ESP_OK) {
             g_sensors.pitot_pa    = g_pitot.pressure_pa;
             g_sensors.static_pa   = 101325.0f;
             g_sensors.pitot_valid = true;
             g_sensors.temp_c      = g_pitot.temp_c;
+            pitot_fail            = 0;
+        } else if (pitot_fail < SENSOR_FAIL_LIMIT && ++pitot_fail == SENSOR_FAIL_LIMIT) {
+            g_sensors.pitot_valid = false;
+            pitot_lost            = true;
         }
         if (imu_ok) {
             g_sensors.pitch_deg = imu_pitch;
             g_sensors.roll_deg  = imu_roll;
             if (!g_sensors.pitot_valid) g_sensors.temp_c = imu_temp;
             g_sensors.imu_valid = true;
+            imu_fail            = 0;
+        } else if (imu_fail < SENSOR_FAIL_LIMIT && ++imu_fail == SENSOR_FAIL_LIMIT) {
+            g_sensors.imu_valid = false;
+            imu_lost            = true;
         }
 
         aerodrag_sensors_t sensors_copy = g_sensors;
         SENSORS_UNLOCK();
+
+        if (pitot_lost) ESP_LOGW(TAG, "Pitot: %d letture fallite — invalidato", SENSOR_FAIL_LIMIT);
+        if (imu_lost)   ESP_LOGW(TAG, "IMU: %d letture fallite — invalidato",   SENSOR_FAIL_LIMIT);
 
         aerodrag_physics_t phy = physics_compute(&sensors_copy, &g_cal);
 
@@ -238,7 +313,12 @@ static void task_pitot_imu(void *arg)
 
         if (g_coach_start_cmd) {
             g_coach_start_cmd = false;
+            int64_t now = esp_timer_get_time();
+            g_session_start_us = now;
+            g_lap_start_us     = now;
+            g_current_lap      = 1;
             g_state = STATE_RECORDING;
+            display_set_screen(SCR_TIMER);
             ESP_LOGI(TAG, "Sessione avviata da coach");
         }
         if (g_coach_stop_cmd) {
@@ -292,6 +372,17 @@ static void task_display(void *arg)
     }
 }
 
+// ─── Power off ────────────────────────────────────────────────────────────────
+// esp_deep_sleep(0) imposta un wakeup timer a 0 µs → reboot immediato.
+// Lo spegnimento reale avviene rilasciando PWR_HOLD (taglia l'alimentazione);
+// il deep sleep senza sorgenti di wakeup è il fallback quando si è sotto USB.
+static void power_off(void)
+{
+    gpio_set_level(PIN_PWR_HOLD, 0);
+    vTaskDelay(pdMS_TO_TICKS(200));
+    esp_deep_sleep_start();
+}
+
 // ─── Task: Battery + housekeeping @ 0.1 Hz ────────────────────────────────────────────────────
 static void task_housekeeping(void *arg)
 {
@@ -317,8 +408,8 @@ static void task_housekeeping(void *arg)
             g_last_activity_us = now;  // impedisci sleep durante OTA
 
         if (!ble_is_connected() && (now - g_last_activity_us) > SLEEP_TIMEOUT_US) {
-            ESP_LOGI(TAG, "Inactivity timeout — deep sleep");
-            esp_deep_sleep(0);
+            ESP_LOGI(TAG, "Inactivity timeout — power off");
+            power_off();
         }
     }
 }
@@ -329,10 +420,15 @@ static volatile bool    g_btn_long_press      = false;
 static volatile bool    g_btn_very_long_press = false;
 static volatile int64_t g_btn_last_tap_us     = 0;
 static volatile bool    g_btn_double_click    = false;
+static volatile int64_t g_btn_last_edge_us    = 0;
 
 static void IRAM_ATTR btn_isr(void *arg)
 {
     int64_t now = esp_timer_get_time();
+    /* Debounce temporale: ignora edge a <20 ms dall'ultimo edge per evitare
+     * doppi g_screen_next / falsi long-press da rimbalzo meccanico. */
+    if (g_btn_last_edge_us > 0 && (now - g_btn_last_edge_us) < 20000LL) return;
+    g_btn_last_edge_us = now;
     if (gpio_get_level(PIN_BTN_USER) == 0) {
         g_btn_press_us = now;
     } else {
@@ -418,10 +514,12 @@ void app_main(void)
 
     ESP_ERROR_CHECK(i2c_init_bus(I2C_NUM_0, PIN_IMU_SDA, PIN_IMU_SCL, I2C0_SPEED_HZ));
     ESP_ERROR_CHECK(i2c_init_bus(I2C_NUM_1, PIN_PITOT_SDA, PIN_PITOT_SCL, I2C1_SPEED_HZ));
+    i2c_scan_bus(I2C_NUM_0, "I2C0 (IMU/RTC, GPIO11/10)");
+    i2c_scan_bus(I2C_NUM_1, "I2C1 (pitot, GPIO15/18)");
 
     ret = sdp810_init(&g_pitot, PITOT_I2C_PORT, PITOT_I2C_ADDR);
     if (ret != ESP_OK)
-        ESP_LOGW(TAG, "SDP810 not found (%.2X) — pitot disabled", ret);
+        ESP_LOGW(TAG, "SDP810 not found (%s) — pitot disabled", esp_err_to_name(ret));
 
     ret = qmi8658_init(&g_imu, IMU_I2C_PORT, IMU_I2C_ADDR);
     if (ret != ESP_OK)
@@ -443,6 +541,7 @@ void app_main(void)
     configASSERT(g_i2c1_mutex);
 
     ble_sensors_init(g_sensors_mutex);
+    ble_sensors_set_wheel_circumference(g_cal.wheel_circ_m);
     /* Freeze scan before ble_server_init: on_sync fires on the NimBLE
      * host task concurrently and would start a 50%-duty-cycle scan that
      * starves the WPA2 4-way handshake under BLE/WiFi coexistence. */
@@ -453,8 +552,8 @@ void app_main(void)
 
     esp_err_t coach_ret = coach_init();
     /* For OFF and timeout: scan resumes now. For success (ESP_OK):
-     * the GOT_IP handler already called set_scan_enabled(true) before
-     * coach_init() unblocked, so this is a harmless no-op. */
+     * the GOT_IP handler in wifi_coach.h re-enables the scan, so this
+     * is a harmless no-op. */
     ble_sensors_set_scan_enabled(true);
     if (coach_ret == ESP_OK && coach_get_mode() != COACH_MODE_OFF)
         ESP_LOGI(TAG, "Coach: %s → %s",
@@ -463,14 +562,12 @@ void app_main(void)
     else if (coach_get_mode() == COACH_MODE_OFF)
         ESP_LOGI(TAG, "Coach: OFF");
 
-    coach_set_ble_lap_cb(ble_lap_notify_cb);
-
     // Fix C1: task_pitot_imu creato una sola volta.
     // Il precedente codice lo creava due volte (refactoring incompleto di task_ant).
     btn_init();
     xTaskCreatePinnedToCore(task_pitot_imu,    "pitot_imu",  4096, NULL, 5, NULL, APP_CPU_NUM);
     xTaskCreatePinnedToCore(task_display,      "display",    8192, NULL, 2, NULL, PRO_CPU_NUM);
-    xTaskCreatePinnedToCore(task_housekeeping, "housekeep",  2048, NULL, 1, NULL, PRO_CPU_NUM);
+    xTaskCreatePinnedToCore(task_housekeeping, "housekeep",  3072, NULL, 1, NULL, PRO_CPU_NUM);
 
     // Fix H3: il watchdog parte dal completamento del boot, non dal valore 0.
     g_last_activity_us = esp_timer_get_time();
@@ -512,7 +609,7 @@ void app_main(void)
             ESP_LOGW(TAG, "Shutting down — battery critical");
             sdp810_stop(&g_pitot);
             vTaskDelay(pdMS_TO_TICKS(500));
-            esp_deep_sleep(0);
+            power_off();
         }
         vTaskDelay(pdMS_TO_TICKS(100));
     }

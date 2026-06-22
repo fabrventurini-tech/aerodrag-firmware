@@ -1,7 +1,9 @@
 #pragma once
 #include "esp_err.h"
+#include "esp_log.h"
 #include "driver/i2c.h"
 #include <math.h>
+#include <stdbool.h>
 
 // ─── QMI8658 register map ─────────────────────────────────────────────────────
 #define QMI8658_REG_WHO_AM_I    0x00   // should read 0x05
@@ -51,15 +53,33 @@ static esp_err_t qmi_read(qmi8658_t *d, uint8_t reg, uint8_t *buf, size_t len)
 esp_err_t qmi8658_init(qmi8658_t *dev, i2c_port_t port, uint8_t addr)
 {
     dev->port  = port;
-    dev->addr  = addr;
     dev->pitch_deg = 0.0f;
     dev->roll_deg  = 0.0f;
+    dev->yaw_deg   = 0.0f;
     dev->last_us   = 0;
 
-    // WHO_AM_I check
-    uint8_t id = 0;
-    esp_err_t ret = qmi_read(dev, QMI8658_REG_WHO_AM_I, &id, 1);
-    if (ret != ESP_OK || id != 0x05) return ESP_ERR_NOT_FOUND;
+    /* WHO_AM_I (atteso 0x05). Il QMI8658 risponde a 0x6A o 0x6B a seconda
+     * del livello del pin SA0, che cambia tra revisioni della scheda:
+     * prova l'indirizzo richiesto e poi l'alternativo. */
+    const uint8_t candidates[2] = { addr, (uint8_t)(addr == 0x6B ? 0x6A : 0x6B) };
+    bool found = false;
+    for (int i = 0; i < 2 && !found; i++) {
+        dev->addr = candidates[i];
+        uint8_t id = 0;
+        esp_err_t r = qmi_read(dev, QMI8658_REG_WHO_AM_I, &id, 1);
+        if (r == ESP_OK && id == 0x05) {
+            found = true;
+            if (dev->addr != addr)
+                ESP_LOGW("QMI8658", "Trovato a 0x%02X, non a 0x%02X: correggere IMU_I2C_ADDR in board_pins.h",
+                         dev->addr, addr);
+        } else {
+            ESP_LOGW("QMI8658", "Probe 0x%02X fallito: %s, WHO_AM_I=0x%02X (atteso 0x05)",
+                     dev->addr, esp_err_to_name(r), id);
+        }
+    }
+    if (!found) return ESP_ERR_NOT_FOUND;
+
+    ESP_LOGI("QMI8658", "Init a 0x%02X", dev->addr);
     // Disable sensors for config
     qmi_write(dev, QMI8658_REG_CTRL7, 0x00);
     vTaskDelay(pdMS_TO_TICKS(10));
@@ -72,20 +92,6 @@ esp_err_t qmi8658_init(qmi8658_t *dev, i2c_port_t port, uint8_t addr)
     // Enable both sensors
     qmi_write(dev, QMI8658_REG_CTRL7, 0x03);
     vTaskDelay(pdMS_TO_TICKS(50));
-    return ESP_OK;
-    vTaskDelay(pdMS_TO_TICKS(10));
-
-    // Acc: ±8g, 125Hz, low-pass filter enabled
-    qmi_write(dev, QMI8658_REG_CTRL2,
-              (QMI8658_ACC_RANGE_8G << 4) | QMI8658_ACC_ODR_125HZ);
-    // Gyro: ±512dps, 125Hz
-    qmi_write(dev, QMI8658_REG_CTRL3,
-              (QMI8658_GYR_RANGE_512 << 4) | QMI8658_GYR_ODR_125HZ);
-
-    // Enable both sensors
-    qmi_write(dev, QMI8658_REG_CTRL7, 0x03);
-    vTaskDelay(pdMS_TO_TICKS(50));
-
     return ESP_OK;
 }
 
@@ -103,16 +109,18 @@ esp_err_t qmi8658_read(qmi8658_t *dev)
     int16_t az_raw = (int16_t)((buf[5] << 8) | buf[4]);
     int16_t gx_raw = (int16_t)((buf[7] << 8) | buf[6]);
     int16_t gy_raw = (int16_t)((buf[9] << 8) | buf[8]);
+    int16_t gz_raw = (int16_t)((buf[11] << 8) | buf[10]);
 
     float ax = ax_raw * QMI8658_ACC_SCALE;
     float ay = ay_raw * QMI8658_ACC_SCALE;
     float az = az_raw * QMI8658_ACC_SCALE;
     float gx = gx_raw * QMI8658_GYR_SCALE;
     float gy = gy_raw * QMI8658_GYR_SCALE;
+    float gz = gz_raw * QMI8658_GYR_SCALE;
 
     // Accelerometer pitch/roll (degrees)
-    float pitch_acc = atan2f(ax, sqrtf(ay*ay + az*az)) * (180.0f / 3.14159f);
-    float roll_acc  = atan2f(ay, sqrtf(ax*ax + az*az)) * (180.0f / 3.14159f);
+    float pitch_acc = atan2f(ax, sqrtf(ay*ay + az*az)) * (180.0f / 3.14159265f);
+    float roll_acc  = atan2f(ay, sqrtf(ax*ax + az*az)) * (180.0f / 3.14159265f);
 
     // Delta time
     int64_t now_us = esp_timer_get_time();
@@ -122,11 +130,17 @@ esp_err_t qmi8658_read(qmi8658_t *dev)
     dev->last_us = now_us;
     if (dt > 0.1f) dt = 0.008f;  // clamp on first call / gap
 
-    // Complementary filter
-    dev->pitch_deg = CF_ALPHA * (dev->pitch_deg + gx * dt)
+    // Complementary filter.
+    // NB: il pitch (accel atan2f(ax,...)) si integra col gyro Y; il roll
+    // (atan2f(ay,...)) col gyro X. Il SEGNO di gx/gy/gz va confermato
+    // sull'hardware (orientamento montaggio IMU sulla scheda).
+    dev->pitch_deg = CF_ALPHA * (dev->pitch_deg + gy * dt)
                    + (1.0f - CF_ALPHA) * pitch_acc;
-    dev->roll_deg  = CF_ALPHA * (dev->roll_deg  + gy * dt)
+    dev->roll_deg  = CF_ALPHA * (dev->roll_deg  + gx * dt)
                    + (1.0f - CF_ALPHA) * roll_acc;
+    // Yaw: nessun riferimento assoluto (no magnetometro) → pura integrazione
+    // del gyro Z; deriverà nel tempo. Segno da confermare sull'hardware.
+    dev->yaw_deg += gz * dt;
 
     // Temperature
     uint8_t tbuf[2];

@@ -12,12 +12,18 @@ CONFIG_SPIRAM_USE_MALLOC=y
 # ─── Bluetooth (NimBLE stack — lighter than Bluedroid) ───────────────────────
 CONFIG_BT_ENABLED=y
 CONFIG_BT_NIMBLE_ENABLED=y
-CONFIG_BT_NIMBLE_MAX_CONNECTIONS=4
+# Capacità connessioni: 1 peripheral (telefono) + 4 central (power/CSC/HR/ruota)
+# = 5, +2 di margine per overlap di riconnessione / secondo viewer. Il controller
+# regge fino a CONFIG_BT_CTRL_BLE_MAX_ACT=10 (conn+adv+scan), quindi 7 è entro i limiti.
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=7
+# CCCD: il telefono può sottoscrivere fino a 8 caratteristiche notify; 16 dà
+# margine (incluse le sottoscrizioni persistite sui bond).
+CONFIG_BT_NIMBLE_MAX_CCCDS=16
 CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
 CONFIG_BT_NIMBLE_ROLE_CENTRAL=y
 CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
 CONFIG_BT_NIMBLE_NVS_PERSIST=y
-CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=100
+CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=185
 
 # ─── WiFi ─────────────────────────────────────────────────────────────────────────────
 # esp_wifi_init/start richiesti da wifi_coach.h
@@ -58,3 +64,6 @@ CONFIG_SPIRAM_USE_CAPS_ALLOC=y
 # ─── OTA firmware update ───────────────────────────────────────────────────────────────
 CONFIG_OTA_ALLOW_HTTP=y
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# Controller BLE: 10 attività (4 connessioni + adv + scan, con margine)
+CONFIG_BT_CTRL_BLE_MAX_ACT=10

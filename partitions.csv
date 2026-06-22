@@ -1,9 +1,13 @@
 # ESP32-S3 AeroDrag partition table
 # 16MB flash total
-# Name,   Type,  SubType,  Offset,    Size,   Flags
+# Due slot app (A/B): OTA ripetibili — esp_ota_get_next_update_partition
+# alterna ota_0/ota_1. Lo schema precedente factory+ota_0 permetteva un
+# solo aggiornamento (dal secondo in poi lo slot di destinazione era la
+# partizione in esecuzione). Richiede riflash via cavo con erase.
+# Name,   Type,  Subtype,  Offset,    Size,   Flags
 nvs,      data,  nvs,      0x9000,    0x10000,
 otadata,  data,  ota,      0x19000,   0x2000,
 phy_init, data,  phy,      0x1B000,   0x1000,
-factory,  app,   factory,  0x20000,   0x400000,
-ota_0,    app,   ota_0,    0x420000,  0x400000,
+ota_0,    app,   ota_0,    0x20000,   0x400000,
+ota_1,    app,   ota_1,    0x420000,  0x400000,
 sessions, data,  spiffs,   0x820000,  0x780000,

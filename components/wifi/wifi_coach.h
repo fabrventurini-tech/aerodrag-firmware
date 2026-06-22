@@ -30,6 +30,7 @@
 #include "ble_sensors.h"
 #include <string.h>
 #include <stdio.h>
+#include <ctype.h>
 
 #define COACH_TAG "coach"
 
@@ -61,6 +62,22 @@ typedef struct {
 extern uint16_t g_current_lap;
 extern device_identity_t g_identity;
 
+// Relay coach→app via BLE COACH_LINK (0xaa0f) — definito in ble_server.h,
+// incluso prima di questo header nello stesso TU (main.c).
+void ble_notify_coach_link(uint8_t type, uint8_t arg);
+
+// Obbligo produttore — identità (CONTRACT §3): il firmware NON deve inviare
+// hello/frame senza un device MAC valido "AA:BB:CC:DD:EE:FF".
+static inline bool coach_valid_mac(const char *m)
+{
+    if (!m) return false;
+    for (int i = 0; i < 17; i++) {
+        if ((i % 3) == 2) { if (m[i] != ':') return false; }
+        else if (!isxdigit((unsigned char)m[i])) return false;
+    }
+    return m[17] == '\0';
+}
+
 static coach_config_t                g_cfg     = {0};
 static esp_websocket_client_handle_t g_ws      = NULL;
 static EventGroupHandle_t            g_wifi_eg = NULL;
@@ -74,9 +91,6 @@ volatile uint8_t g_coach_mode_display = 0;
 
 #define WIFI_CONNECTED_BIT  BIT0
 #define WIFI_FAIL_BIT       BIT1
-
-static void (*g_ble_lap_cb)(void) = NULL;
-void coach_set_ble_lap_cb(void (*cb)(void)) { g_ble_lap_cb = cb; }
 
 static void coach_handle_command(const char *data, int len);
 
@@ -99,6 +113,27 @@ static void _coach_apply_static_ip(void)
 
 static void _ws_handler(void *arg, esp_event_base_t base, int32_t id, void *data);
 
+/* Crea e avvia il client WebSocket una sola volta — chiamabile sia dal
+ * GOT_IP handler che da coach_init/_coach_connect_task senza duplicarlo. */
+static void _coach_ws_start(void)
+{
+    if (g_ws) return;
+    char url[80];
+    snprintf(url, sizeof(url), "ws://%s:%d/device", g_cfg.host, g_cfg.port);
+    esp_websocket_client_config_t wsc = {
+        .uri                  = url,
+        .reconnect_timeout_ms = 3000,
+        .network_timeout_ms   = 5000,
+    };
+    g_ws = esp_websocket_client_init(&wsc);
+    if (!g_ws) {
+        ESP_LOGE(COACH_TAG, "esp_websocket_client_init failed");
+        return;
+    }
+    esp_websocket_register_events(g_ws, WEBSOCKET_EVENT_ANY, _ws_handler, NULL);
+    esp_websocket_client_start(g_ws);
+}
+
 static void _wifi_handler(void *arg, esp_event_base_t base,
                            int32_t id, void *data)
 {
@@ -107,6 +142,12 @@ static void _wifi_handler(void *arg, esp_event_base_t base,
             esp_wifi_connect();
         } else if (id == WIFI_EVENT_STA_DISCONNECTED) {
             g_ws_ready = false;
+            if (g_cfg.mode == COACH_MODE_OFF) {
+                /* WiFi in spegnimento (coach_apply_mode → OFF):
+                 * niente riconnessione, lo scan BLE resta attivo. */
+                ble_sensors_set_scan_enabled(true);
+                return;
+            }
             wifi_event_sta_disconnected_t *dd = (wifi_event_sta_disconnected_t *)data;
             ESP_LOGW(COACH_TAG, "WiFi perso (reason=%d rssi=%d) — riconnessione tra 3s",
                      dd ? dd->reason : -1, dd ? dd->rssi : 0);
@@ -123,20 +164,17 @@ static void _wifi_handler(void *arg, esp_event_base_t base,
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *e = (ip_event_got_ip_t *)data;
         ESP_LOGI(COACH_TAG, "IP: " IPSTR, IP2STR(&e->ip_info.ip));
+        /* Handshake WPA2 completato — lo scan BLE può ripartire.
+         * Senza questa chiamata, dopo il primo drop WiFi lo scan
+         * resterebbe disabilitato per sempre (disabilitato in
+         * STA_DISCONNECTED e mai più riattivato). */
+        ble_sensors_set_scan_enabled(true);
+        /* WS creato PRIMA di segnalare il bit: coach_init è in attesa su
+         * WIFI_CONNECTED_BIT e chiama anch'esso _coach_ws_start — se il bit
+         * fosse settato prima, potrebbe vedere g_ws ancora NULL e creare
+         * un secondo client. */
+        _coach_ws_start();
         if (g_wifi_eg) xEventGroupSetBits(g_wifi_eg, WIFI_CONNECTED_BIT);
-        if (!g_ws) {
-            char url[80];
-            snprintf(url, sizeof(url), "ws://%s:%d/device", g_cfg.host, g_cfg.port);
-            esp_websocket_client_config_t wsc = {
-                .uri                  = url,
-                .reconnect_timeout_ms = 3000,
-                .network_timeout_ms   = 5000,
-            };
-            g_ws = esp_websocket_client_init(&wsc);
-            esp_websocket_register_events(g_ws, WEBSOCKET_EVENT_ANY, _ws_handler, NULL);
-            esp_websocket_client_start(g_ws);
-            ESP_LOGI(COACH_TAG, "WS avviato in ritardo dopo IP");
-        }
     }
 }
 
@@ -146,6 +184,12 @@ static void _ws_handler(void *arg, esp_event_base_t base,
     esp_websocket_event_data_t *evt = (esp_websocket_event_data_t *)data;
     switch (id) {
     case WEBSOCKET_EVENT_CONNECTED:
+        // §3 obbligo produttore: senza un device MAC valido NON apriamo lo stream.
+        if (!coach_valid_mac(g_identity.device_id)) {
+            ESP_LOGE(COACH_TAG, "device_id non valido (%s): hello/frame soppressi (§3)",
+                     g_identity.device_id);
+            break;   // g_ws_ready resta false → coach_send_frame non trasmette
+        }
         ESP_LOGI(COACH_TAG, "✓ Connesso al Pi come %s (%s) fw=%s",
                  g_identity.athlete_name, g_identity.device_id, FW_VERSION_STR);
         g_ws_ready = true;
@@ -174,20 +218,36 @@ static void _ws_handler(void *arg, esp_event_base_t base,
 
 static void coach_handle_command(const char *data, int len)
 {
-    char buf[128] = {0};
-    memcpy(buf, data, len < 127 ? len : 127);
+    /* Buffer dimensionato per l'intero comando (URL OTA lunghi inclusi).
+     * len clampato a sizeof(buf)-1, terminazione NUL esplicita. */
+    char buf[OTA_URL_MAXLEN + 128] = {0};
+    if (len < 0) return;
+    if (len > (int)sizeof(buf) - 1) len = (int)sizeof(buf) - 1;
+    memcpy(buf, data, (size_t)len);
+    buf[len] = '\0';
 
-    if (strstr(buf, "\"lap\"")) {
+    /* Accetta solo veri comandi: deve contenere "type":"cmd". Evita che un
+     * nome/URL contenente "start"/"lap"/"stop" scateni comandi spuri. */
+    if (!strstr(buf, "\"type\":\"cmd\"")) return;
+
+    /* Match ESATTO sull'action (niente sottostringhe generiche).
+     * Ogni comando atleta viene anche inoltrato all'app via BLE COACH_LINK
+     * (0xaa0f, contract v0.3.0): 0x01 start, 0x02 stop, 0x03 lap. L'app non è
+     * più connessa al /coach del Pi e riceve i comandi solo da qui. */
+    if (strstr(buf, "\"action\":\"lap\"")) {
         g_coach_lap_cmd = true;
+        ble_notify_coach_link(0x03, 0);   // lapNum non noto dal comando → 0
         ESP_LOGI(COACH_TAG, "LAP dal coach");
-    } else if (strstr(buf, "\"start\"")) {
+    } else if (strstr(buf, "\"action\":\"start\"")) {
         g_coach_start_cmd = true;
+        ble_notify_coach_link(0x01, 0);
         ESP_LOGI(COACH_TAG, "START dal coach");
-    } else if (strstr(buf, "\"stop\"")) {
+    } else if (strstr(buf, "\"action\":\"stop\"")) {
         g_coach_stop_cmd = true;
+        ble_notify_coach_link(0x02, 0);
         ESP_LOGI(COACH_TAG, "STOP dal coach");
-    } else if (strstr(buf, "\"ota\"")) {
-        // Formato: {"type":"cmd","action":"ota","url":"http://..."}  
+    } else if (strstr(buf, "\"action\":\"ota\"")) {
+        // Formato: {"type":"cmd","action":"ota","url":"http://..."}
         const char *p = strstr(buf, "\"url\":\"");
         if (p) {
             p += 7;
@@ -212,8 +272,20 @@ esp_err_t coach_send_frame(const aerodrag_sensors_t *s,
                             bool    lap_event)
 {
     if (!g_ws_ready || !g_ws || !p->valid) return ESP_ERR_INVALID_STATE;
+    // §3 obbligo produttore: identità MAC valida obbligatoria (difesa ridondante).
+    if (!coach_valid_mac(g_identity.device_id)) return ESP_ERR_INVALID_STATE;
 
     int64_t ts_ms = esp_timer_get_time() / 1000LL;
+
+    // Contract v0.1.x — network telemetry frame capped at 2 Hz (the BLE notify
+    // path stays at 10 Hz for the app's local rendering). The caller task runs
+    // at 10 Hz, so we drop frames closer than 500 ms apart.
+    // Exception (v0.1.3): a frame carrying a lap edge (lap_event) ALWAYS goes
+    // out — otherwise the lap marker is lost when the edge lands in a throttled
+    // cycle (the coach broadcasts lap_event only on lapEvent===true).
+    static int64_t s_last_frame_ms = 0;
+    if (!lap_event && ts_ms - s_last_frame_ms < 500) return ESP_OK;
+    s_last_frame_ms = ts_ms;
 
     char athlete_safe[sizeof(g_identity.athlete_name)];
     strlcpy(athlete_safe, g_identity.athlete_name, sizeof(athlete_safe));
@@ -222,15 +294,19 @@ esp_err_t coach_send_frame(const aerodrag_sensors_t *s,
         if (c == '"' || c == '\\' || (unsigned char)c < 0x20) athlete_safe[i] = '_';
     }
 
-    char json[400];
+    // Timestamp oggettivo UTC (contract v0.3.0): 0 se l'orologio non è impostato
+    // (l'app lo imposta via BLE TIME 0xaa10). `t` resta il monotòno di sorgente.
+    uint64_t t_utc = aerodrag_time_get_epoch_ms();
+
+    char json[420];
     int n = snprintf(json, sizeof(json),
         "{\"device\":\"%s\",\"athlete\":\"%s\","
-        "\"t\":%lld,\"CdA\":%.4f,\"pwr\":%d,\"spd\":%.1f,"
+        "\"t\":%lld,\"tUtc\":%llu,\"CdA\":%.4f,\"pwr\":%d,\"spd\":%.1f,"
         "\"pitch\":%.1f,\"hr\":%d,\"cad\":%d,\"wind\":%.2f,"
         "\"rho\":%.4f,\"pctAero\":%d,\"lap\":%d,"
         "\"lapEvent\":%s,\"battery\":%d}",
         g_identity.device_id, athlete_safe,
-        (long long)ts_ms, p->CdA, s->power_w, s->speed_ms * 3.6f,
+        (long long)ts_ms, (unsigned long long)t_utc, p->CdA, s->power_w, s->speed_ms * 3.6f,
         s->pitch_deg, s->hr_bpm, s->cadence_rpm, p->wind_ms,
         p->rho, p->pct_aero, g_current_lap,
         lap_event ? "true" : "false", battery_pct);
@@ -326,16 +402,10 @@ esp_err_t coach_init(void)
         return ESP_ERR_TIMEOUT;
     }
 
-    char url[80];
-    snprintf(url, sizeof(url), "ws://%s:%d/device", g_cfg.host, g_cfg.port);
-    esp_websocket_client_config_t wsc = {
-        .uri                  = url,
-        .reconnect_timeout_ms = 3000,
-        .network_timeout_ms   = 5000,
-    };
-    g_ws = esp_websocket_client_init(&wsc);
-    esp_websocket_register_events(g_ws, WEBSOCKET_EVENT_ANY, _ws_handler, NULL);
-    return esp_websocket_client_start(g_ws);
+    /* Il GOT_IP handler ha quasi certamente già creato il client:
+     * _coach_ws_start è idempotente, niente doppio init. */
+    _coach_ws_start();
+    return ESP_OK;
 }
 
 void coach_cycle_mode(void)
@@ -350,18 +420,7 @@ void coach_cycle_mode(void)
 static void _coach_connect_task(void *arg)
 {
     if (g_wifi_hw_started) {
-        if (!g_ws) {
-            char url[80];
-            snprintf(url, sizeof(url), "ws://%s:%d/device", g_cfg.host, g_cfg.port);
-            esp_websocket_client_config_t wsc = {
-                .uri                  = url,
-                .reconnect_timeout_ms = 3000,
-                .network_timeout_ms   = 5000,
-            };
-            g_ws = esp_websocket_client_init(&wsc);
-            esp_websocket_register_events(g_ws, WEBSOCKET_EVENT_ANY, _ws_handler, NULL);
-            esp_websocket_client_start(g_ws);
-        }
+        _coach_ws_start();
         vTaskDelete(NULL);
         return;
     }
@@ -416,16 +475,7 @@ static void _coach_connect_task(void *arg)
         return;
     }
 
-    char url[80];
-    snprintf(url, sizeof(url), "ws://%s:%d/device", g_cfg.host, g_cfg.port);
-    esp_websocket_client_config_t wsc = {
-        .uri                  = url,
-        .reconnect_timeout_ms = 3000,
-        .network_timeout_ms   = 5000,
-    };
-    g_ws = esp_websocket_client_init(&wsc);
-    esp_websocket_register_events(g_ws, WEBSOCKET_EVENT_ANY, _ws_handler, NULL);
-    esp_websocket_client_start(g_ws);
+    _coach_ws_start();
     vTaskDelete(NULL);
 }
 
@@ -433,12 +483,18 @@ esp_err_t coach_apply_mode(void)
 {
     coach_config_load(&g_cfg);
     if (g_cfg.mode == COACH_MODE_OFF) {
+        if (g_wifi_reconnect_timer) esp_timer_stop(g_wifi_reconnect_timer);
         if (g_ws) {
             esp_websocket_client_stop(g_ws);
             esp_websocket_client_destroy(g_ws);
             g_ws = NULL;
         }
         g_ws_ready = false;
+        if (g_wifi_hw_started) {
+            esp_wifi_stop();           /* OFF = radio WiFi davvero spenta */
+            g_wifi_hw_started = false;
+        }
+        ble_sensors_set_scan_enabled(true);
         return ESP_OK;
     }
     xTaskCreate(_coach_connect_task, "coach_conn", 4096, NULL, 3, NULL);

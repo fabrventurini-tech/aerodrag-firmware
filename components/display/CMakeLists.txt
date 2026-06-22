@@ -10,4 +10,5 @@ idf_component_register(
         esp_wifi
         esp_netif
         qrcode
+        esp_lcd
 )

@@ -48,7 +48,7 @@ static inline aerodrag_physics_t physics_compute(
 
     // Air density correction
     float rho = physics_calc_rho(s->temp_c, s->humidity_pct, s->altitude_m);
-    if (rho < 0.8f || rho > 1.4f) rho = RHO_STD;  // sanity clamp
+    if (rho < 0.8f || rho > 1.5f) rho = RHO_STD;  // sanity clamp (allineato a physics_calc_rho)
 
     // Pitot: v_air = sqrt(2 * ΔP / ρ)
     float dp = s->pitot_pa;
@@ -66,6 +66,9 @@ static inline aerodrag_physics_t physics_compute(
     float slope = sinf(pitch_rad);  // approximation valid for small angles
 
     // Power components
+    // crr è app-autorevole (CONFIG 0xaa08, §2). CRR (0.0040) è solo un default di
+    // sicurezza per device appena flashato con NVS vuota, finché l'app non scrive la
+    // CONFIG alla connessione; non fa parte del modello canonico §6.
     float crr_val   = (cal && cal->crr > 0.0f) ? cal->crr : CRR;
     float p_rolling = crr_val * mass * GRAVITY_MS2 * s->speed_ms;
     float p_gravity = mass * GRAVITY_MS2 * slope * s->speed_ms;
@@ -109,5 +112,5 @@ static inline float ema_update(float prev, float new_val, float alpha)
     return alpha * new_val + (1.0f - alpha) * prev;
 }
 
-#define EMA_ALPHA_30S  (1.0f / 30.0f)   // 30-sample window at 1 Hz
+#define EMA_ALPHA_30S  (1.0f / 30.0f)   // 30 campioni: ~3 s a 10 Hz (task_pitot_imu)
 #define EMA_ALPHA_5S   (1.0f / 5.0f)

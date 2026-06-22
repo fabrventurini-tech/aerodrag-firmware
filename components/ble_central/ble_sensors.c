@@ -31,8 +31,17 @@
 
 #include "host/ble_uuid.h"
 #include "os/os_mbuf.h"
+#include "nvs.h"
 
 static const char *TAG = "ble_sens";
+
+/* Relay dello stream ruota Crr verso l'app (implementato in ble_server.h) */
+extern void ble_notify_wheel_stream(const void *data, uint8_t len);
+
+/* Notifica un sensore scoperto durante la discovery (0xaa0e, ble_server.h).
+ * mac = MAC in display order (mac[0]=AA, primo ottetto; v0.2.3). */
+extern void ble_notify_sensor_scan(uint8_t type, const uint8_t *mac_be,
+                                   int8_t rssi, const char *name, uint8_t name_len);
 
 /* ─────────────────────────────────────────────────────────────────────────── */
 /*  COSTANTI GATT                                                               */
@@ -46,11 +55,22 @@ static const char *TAG = "ble_sens";
 #define UUID_CHR_CSC_MEAS   0x2A5Bu     /* CSC Measurement                     */
 #define UUID_CHR_HR_MEAS    0x2A37u     /* Heart Rate Measurement              */
 
-/* UUID dei 3 servizi target — usati per filtrare l'advertising */
-static const uint16_t TARGET_SVCS[] = {
-    UUID_SVC_POWER, UUID_SVC_CSC, UUID_SVC_HR
-};
-#define N_TARGET_SVCS  (sizeof(TARGET_SVCS) / sizeof(TARGET_SVCS[0]))
+/* Sensore ruota Crr AeroDrag (servizio proprietario 0xBB00) */
+#define UUID_SVC_WHEEL        0xBB00u   /* AeroDrag Wheel service              */
+#define UUID_CHR_WHEEL_STREAM 0xBB01u   /* stream grezzo (NOTIFY, 16 B)        */
+#define UUID_CHR_WHEEL_CMD    0xBB03u   /* comando coast-down (WRITE, 1 B)     */
+#define UUID_CHR_WHEEL_CONFIG 0xBB04u   /* config (WRITE, float circ + mass)   */
+
+/* type (whitelist) → service UUID 16-bit */
+static uint16_t type_to_svc(uint8_t type) {
+    switch (type) {
+        case SENSOR_TYPE_POWER: return UUID_SVC_POWER;
+        case SENSOR_TYPE_CSC:   return UUID_SVC_CSC;
+        case SENSOR_TYPE_HR:    return UUID_SVC_HR;
+        case SENSOR_TYPE_WHEEL: return UUID_SVC_WHEEL;
+        default:                return 0;
+    }
+}
 
 /* ─────────────────────────────────────────────────────────────────────────── */
 /*  STATO MACCHINA A STATI PER OGNI SLOT                                        */
@@ -68,15 +88,37 @@ typedef enum {
 typedef struct {
     ble_addr_t   addr;
     uint16_t     conn_handle;
-    uint16_t     svc_uuid;          /* 0x1818 / 0x1816 / 0x180D            */
+    uint16_t     svc_uuid;          /* 0x1818 / 0x1816 / 0x180D / 0xBB00    */
     uint16_t     svc_start_handle;
     uint16_t     svc_end_handle;
-    uint16_t     chr_val_handle;    /* handle valore caratteristica         */
+    uint16_t     chr_val_handle;    /* handle valore caratteristica (notify) */
+    uint16_t     cmd_val_handle;    /* solo wheel: handle 0xBB03 (cmd write)  */
+    uint16_t     cfg_val_handle;    /* solo wheel: handle 0xBB04 (config write)*/
     slot_state_t state;
 } sensor_slot_t;
 
-#define N_SLOTS 3
+/* 4 slot: power + csc + hr + wheel. Richiede CONFIG_BT_NIMBLE_MAX_CONNECTIONS>=5
+ * (4 sensori central + 1 app peripheral). */
+#define N_SLOTS 4
 static sensor_slot_t s_slots[N_SLOTS];
+
+/* ── Whitelist sensori (contract v0.2.0 §2) ──────────────────────────────── */
+#define WL_NVS_NS  "aerodrag"
+#define WL_NVS_KEY "sensor_wl"
+static sensor_wl_entry_t s_wl[SENSOR_WL_MAX];
+static uint8_t           s_wl_count;
+
+/* MAC dell'advertiser (addr.val è little-endian) vs whitelist (mac[] display order,
+ * mac[0]=primo ottetto; v0.2.3). Ritorna l'indice in whitelist o -1. */
+static int wl_find_by_addr(const ble_addr_t *addr) {
+    for (uint8_t i = 0; i < s_wl_count; i++) {
+        bool match = true;
+        for (int b = 0; b < 6; b++)
+            if (addr->val[b] != s_wl[i].mac[5 - b]) { match = false; break; }
+        if (match) return i;
+    }
+    return -1;
+}
 
 /* ─────────────────────────────────────────────────────────────────────────── */
 /*  DATI SENSORI CONDIVISI                                                       */
@@ -90,6 +132,7 @@ static SemaphoreHandle_t s_mutex;   /* passato da main.c = g_sensors_mutex  */
 /* ─────────────────────────────────────────────────────────────────────────── */
 
 static float    s_wheel_circ_m   = 2.105f;  /* 700c x 25mm default */
+static float    s_rider_mass_kg  = 78.0f;   /* rider+bici, inoltrata a 0xBB04 */
 static uint32_t s_wheel_revs_prev;
 static uint16_t s_wheel_time_prev;
 static bool     s_wheel_init;
@@ -131,6 +174,7 @@ static uint16_t svc_to_chr_uuid(uint16_t svc) {
         case UUID_SVC_POWER: return UUID_CHR_POWER_MEAS;
         case UUID_SVC_CSC:   return UUID_CHR_CSC_MEAS;
         case UUID_SVC_HR:    return UUID_CHR_HR_MEAS;
+        case UUID_SVC_WHEEL: return UUID_CHR_WHEEL_STREAM;
         default:             return 0;
     }
 }
@@ -217,8 +261,7 @@ static void parse_csc_meas(const uint8_t *d, uint16_t len) {
                 float speed_ms = (float)dr * s_wheel_circ_m * 1024.0f / (float)dt;
                 if (speed_ms > 0.5f && speed_ms < 30.0f) {  /* 1.8 km/h – 108 km/h */
                     s_data.speed_cms  = (uint16_t)(speed_ms * 100.0f);
-                    /* distanza cumulativa — wrappa a ~65535m = 65km */
-                    s_data.distance_m = (uint16_t)((float)wr * s_wheel_circ_m);
+                    s_data.distance_m = (uint32_t)((float)wr * s_wheel_circ_m);
                     s_data.status    |= BLE_SENS_SPEED;
                 }
             }
@@ -280,6 +323,57 @@ static void parse_hr_meas(const uint8_t *d, uint16_t len) {
 /*  GATT DISCOVERY CALLBACKS                                                     */
 /* ─────────────────────────────────────────────────────────────────────────── */
 
+/* Scrive la config (circonferenza + massa) sul sensore ruota via 0xBB04.
+ * Layout: float32 tireCircM + float32 massKg (8 B, little-endian). */
+static void wheel_push_config(void) {
+    for (int i = 0; i < N_SLOTS; i++) {
+        if (s_slots[i].state == SLOT_READY &&
+            s_slots[i].svc_uuid == UUID_SVC_WHEEL &&
+            s_slots[i].cfg_val_handle != 0) {
+            float cfg[2] = { s_wheel_circ_m, s_rider_mass_kg };
+            ble_gattc_write_flat(s_slots[i].conn_handle,
+                                 s_slots[i].cfg_val_handle,
+                                 cfg, sizeof(cfg), NULL, NULL);
+            ESP_LOGI(TAG, "Wheel config inviata: circ=%.3f m mass=%.1f kg",
+                     s_wheel_circ_m, s_rider_mass_kg);
+            return;
+        }
+    }
+}
+
+/* Wheel: discovery della caratteristica config 0xBB04 → salva handle e invia */
+static int on_disc_wheel_cfg(uint16_t conn_h,
+                             const struct ble_gatt_error *err,
+                             const struct ble_gatt_chr *chr, void *arg)
+{
+    (void)conn_h;
+    sensor_slot_t *slot = (sensor_slot_t *)arg;
+    if (!slot) return 0;
+    if (err->status == 0 && chr &&
+        ble_uuid_u16(&chr->uuid.u) == UUID_CHR_WHEEL_CONFIG) {
+        slot->cfg_val_handle = chr->val_handle;
+        wheel_push_config();   /* invia subito circonferenza+massa correnti */
+    }
+    return 0;
+}
+
+/* Wheel: discovery della caratteristica comando 0xBB03 → salva cmd_val_handle */
+static int on_disc_wheel_cmd(uint16_t conn_h,
+                             const struct ble_gatt_error *err,
+                             const struct ble_gatt_chr *chr, void *arg)
+{
+    (void)conn_h;
+    sensor_slot_t *slot = (sensor_slot_t *)arg;
+    if (!slot) return 0;
+    if (err->status == 0 && chr &&
+        ble_uuid_u16(&chr->uuid.u) == UUID_CHR_WHEEL_CMD) {
+        slot->cmd_val_handle = chr->val_handle;
+        ESP_LOGI(TAG, "Slot[%td] wheel CMD handle=%d",
+                 slot - s_slots, chr->val_handle);
+    }
+    return 0;
+}
+
 /* 3. CCCD write completato → slot pronto */
 static int on_write_cccd(uint16_t conn_h,
                           const struct ble_gatt_error *err,
@@ -293,6 +387,18 @@ static int on_write_cccd(uint16_t conn_h,
         slot->state = SLOT_READY;
         ESP_LOGI(TAG, "Slot[%td] PRONTO  svc=0x%04X  val_h=%d",
                  slot - s_slots, slot->svc_uuid, slot->chr_val_handle);
+        /* Il sensore ruota ha una 2ª caratteristica (0xBB03) per i comandi
+         * coast-down: scopri l'handle ora che il servizio è già mappato. */
+        if (slot->svc_uuid == UUID_SVC_WHEEL && slot->svc_start_handle) {
+            ble_uuid16_t cmd_uuid = BLE_UUID16_INIT(UUID_CHR_WHEEL_CMD);
+            ble_gattc_disc_chrs_by_uuid(conn_h,
+                                        slot->svc_start_handle, slot->svc_end_handle,
+                                        &cmd_uuid.u, on_disc_wheel_cmd, slot);
+            ble_uuid16_t cfg_uuid = BLE_UUID16_INIT(UUID_CHR_WHEEL_CONFIG);
+            ble_gattc_disc_chrs_by_uuid(conn_h,
+                                        slot->svc_start_handle, slot->svc_end_handle,
+                                        &cfg_uuid.u, on_disc_wheel_cfg, slot);
+        }
     } else {
         ESP_LOGW(TAG, "Slot[%td] CCCD write errore %d, disconnetto",
                  slot - s_slots, err->status);
@@ -401,6 +507,7 @@ static void start_scan(void);
 static esp_timer_handle_t s_scan_restart_timer = NULL;
 static volatile bool      s_scan_enabled = true;
 static volatile bool      s_nimble_synced = false;  /* true dopo on_sync */
+static volatile bool      s_discovery = false;       /* discovery 0xaa0e attiva */
 static void _scan_restart_cb(void *arg) { start_scan(); }
 
 /* Riavvia il scan dopo 2 s — lascia tempo a WiFi tra una sessione e l'altra */
@@ -417,7 +524,12 @@ static void start_scan_delayed(void) {
 
 static void start_scan(void) {
     if (!s_scan_enabled)       return;  /* scan sospeso (es. WiFi)  */
-    if (!slot_idle())          return;  /* tutti gli slot occupati */
+    /* In discovery si scansiona sempre (anche con whitelist vuota); in esercizio
+     * solo se c'è almeno un sensore autorizzato e uno slot libero. */
+    if (!s_discovery) {
+        if (s_wl_count == 0)   return;  /* nessun sensore autorizzato */
+        if (!slot_idle())      return;  /* tutti gli slot occupati    */
+    }
     if (ble_gap_disc_active()) return;  /* scan già in corso       */
 
     struct ble_gap_disc_params p = {
@@ -437,27 +549,62 @@ static void start_scan(void) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────── */
-/*  HELPER: cerca UUID 16-bit nell'advertising data                              */
+/*  DISCOVERY (0xaa0e) — scopre i sensori e ne riporta i MAC all'app            */
 /* ─────────────────────────────────────────────────────────────────────────── */
 
-static uint16_t adv_find_target_svc(const uint8_t *data, uint8_t dlen) {
-    for (uint8_t i = 0; i < dlen; ) {
-        if (i + 1 >= dlen) break;
-        uint8_t alen = data[i];
-        uint8_t type = data[i + 1];
-        if (alen == 0) break;
+static ble_addr_t         s_seen[20];
+static uint8_t            s_seen_n = 0;
+static esp_timer_handle_t s_disc_timer = NULL;
 
-        /* 0x02 = Incomplete list 16-bit UUIDs, 0x03 = Complete list */
-        if ((type == 0x02 || type == 0x03) && alen >= 3) {
+/* Mappa un service UUID 16-bit target → type whitelist (0 se non target) */
+static uint8_t svc_to_type(uint16_t svc) {
+    switch (svc) {
+        case UUID_SVC_POWER: return SENSOR_TYPE_POWER;
+        case UUID_SVC_CSC:   return SENSOR_TYPE_CSC;
+        case UUID_SVC_HR:    return SENSOR_TYPE_HR;
+        case UUID_SVC_WHEEL: return SENSOR_TYPE_WHEEL;
+        default:             return 0;
+    }
+}
+
+/* Cerca nell'advertising un service UUID 16-bit target → ritorna il type (0=no) */
+static uint8_t adv_find_target_type(const uint8_t *data, uint8_t dlen) {
+    for (uint8_t i = 0; i + 1 < dlen; ) {
+        uint8_t alen = data[i];
+        if (alen == 0) break;
+        uint8_t type = data[i + 1];
+        if ((type == 0x02 || type == 0x03) && alen >= 3) {  /* 16-bit UUID list */
             for (uint8_t j = 2; j < alen && i + j + 1 < dlen; j += 2) {
                 uint16_t uuid = (uint16_t)(data[i+j] | (data[i+j+1] << 8));
-                for (unsigned k = 0; k < N_TARGET_SVCS; k++)
-                    if (uuid == TARGET_SVCS[k]) return uuid;
+                uint8_t t = svc_to_type(uuid);
+                if (t) return t;
             }
         }
         i += alen + 1;
     }
     return 0;
+}
+
+/* Estrae il local name (0x08 shortened / 0x09 complete) dall'advertising */
+static uint8_t adv_find_name(const uint8_t *data, uint8_t dlen, char *out, uint8_t max) {
+    for (uint8_t i = 0; i + 1 < dlen; ) {
+        uint8_t alen = data[i];
+        if (alen == 0) break;
+        uint8_t type = data[i + 1];
+        if ((type == 0x08 || type == 0x09) && alen >= 1) {
+            uint8_t n = alen - 1;
+            if (n > max) n = max;
+            if (i + 2 + n <= dlen) { memcpy(out, &data[i+2], n); return n; }
+        }
+        i += alen + 1;
+    }
+    return 0;
+}
+
+static bool seen_contains(const ble_addr_t *addr) {
+    for (uint8_t i = 0; i < s_seen_n; i++)
+        if (memcmp(s_seen[i].val, addr->val, 6) == 0) return true;
+    return false;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────── */
@@ -472,7 +619,26 @@ static int central_gap_event(struct ble_gap_event *event, void *arg) {
     /* ── Dispositivo scoperto durante scan ─────────────────────────────── */
     case BLE_GAP_EVENT_DISC: {
         const struct ble_gap_disc_desc *disc = &event->disc;
-        uint16_t svc = adv_find_target_svc(disc->data, disc->length_data);
+
+        /* Discovery (0xaa0e): riporta i sensori target SENZA connettersi. */
+        if (s_discovery) {
+            uint8_t t = adv_find_target_type(disc->data, disc->length_data);
+            if (!t) break;
+            if (seen_contains(&disc->addr)) break;
+            if (s_seen_n < (sizeof(s_seen)/sizeof(s_seen[0])))
+                s_seen[s_seen_n++] = disc->addr;
+            uint8_t mac_be[6];
+            for (int b = 0; b < 6; b++) mac_be[b] = disc->addr.val[5 - b];
+            char name[22];
+            uint8_t nl = adv_find_name(disc->data, disc->length_data, name, sizeof(name));
+            ble_notify_sensor_scan(t, mac_be, disc->rssi, name, nl);
+            break;  /* in discovery non ci si connette */
+        }
+
+        /* Contract v0.2.0: connetti SOLO ai MAC in whitelist (anti cross-talk). */
+        int wl = wl_find_by_addr(&disc->addr);
+        if (wl < 0) break;
+        uint16_t svc = type_to_svc(s_wl[wl].type);
         if (!svc) break;
         if (already_connected(&disc->addr)) break;
 
@@ -582,6 +748,9 @@ static int central_gap_event(struct ble_gap_event *event, void *arg) {
             case UUID_SVC_POWER: parse_power_meas(buf, copy_len); break;
             case UUID_SVC_CSC:   parse_csc_meas(buf, copy_len);   break;
             case UUID_SVC_HR:    parse_hr_meas(buf, copy_len);    break;
+            /* Wheel: nessun parsing — relay grezzo all'app via 0xaa0c.
+             * La calibrazione Crr resta logica dell'app (contract v0.2.0). */
+            case UUID_SVC_WHEEL: ble_notify_wheel_stream(buf, (uint8_t)copy_len); break;
         }
         break;
     }
@@ -608,7 +777,70 @@ void ble_sensors_init(SemaphoreHandle_t sensors_mutex) {
     memset(&s_data, 0, sizeof(s_data));
     s_wheel_init = false;
     s_crank_init = false;
+    ble_sensors_load_whitelist();   /* whitelist persistita (NVS) */
     /* Il scan parte in ble_sensors_on_sync(), non qui */
+}
+
+/* ── Whitelist sensori (contract v0.2.0) ─────────────────────────────────── */
+
+void ble_sensors_load_whitelist(void) {
+    s_wl_count = 0;
+    memset(s_wl, 0, sizeof(s_wl));
+    nvs_handle_t h;
+    if (nvs_open(WL_NVS_NS, NVS_READONLY, &h) != ESP_OK) return;
+    size_t len = sizeof(s_wl);
+    if (nvs_get_blob(h, WL_NVS_KEY, s_wl, &len) == ESP_OK)
+        s_wl_count = (uint8_t)(len / sizeof(sensor_wl_entry_t));
+    nvs_close(h);
+    ESP_LOGI(TAG, "Whitelist caricata: %u sensori", s_wl_count);
+}
+
+static void wl_save(void) {
+    nvs_handle_t h;
+    if (nvs_open(WL_NVS_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_blob(h, WL_NVS_KEY, s_wl, (size_t)s_wl_count * sizeof(sensor_wl_entry_t));
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+void ble_sensors_set_whitelist(const sensor_wl_entry_t *entries, uint8_t count) {
+    if (count > SENSOR_WL_MAX) count = SENSOR_WL_MAX;
+    s_wl_count = count;
+    memset(s_wl, 0, sizeof(s_wl));
+    if (entries && count) memcpy(s_wl, entries, (size_t)count * sizeof(sensor_wl_entry_t));
+    wl_save();
+    ESP_LOGI(TAG, "Whitelist aggiornata: %u sensori", s_wl_count);
+
+    /* Disconnetti gli slot non più ammessi dalla nuova whitelist */
+    for (int i = 0; i < N_SLOTS; i++) {
+        if (s_slots[i].state != SLOT_IDLE &&
+            wl_find_by_addr(&s_slots[i].addr) < 0) {
+            ESP_LOGI(TAG, "Slot[%d] rimosso (non più in whitelist)", i);
+            ble_gap_terminate(s_slots[i].conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+        }
+    }
+    if (s_nimble_synced) start_scan();
+}
+
+uint8_t ble_sensors_get_whitelist(sensor_wl_entry_t *out, uint8_t max) {
+    uint8_t n = (s_wl_count < max) ? s_wl_count : max;
+    if (out && n) memcpy(out, s_wl, (size_t)n * sizeof(sensor_wl_entry_t));
+    return n;
+}
+
+void ble_sensors_wheel_command(uint8_t cmd) {
+    for (int i = 0; i < N_SLOTS; i++) {
+        if (s_slots[i].state == SLOT_READY &&
+            s_slots[i].svc_uuid == UUID_SVC_WHEEL &&
+            s_slots[i].cmd_val_handle != 0) {
+            ble_gattc_write_flat(s_slots[i].conn_handle,
+                                 s_slots[i].cmd_val_handle,
+                                 &cmd, 1, NULL, NULL);
+            ESP_LOGI(TAG, "Wheel CMD 0x%02X inviato", cmd);
+            return;
+        }
+    }
+    ESP_LOGW(TAG, "Wheel CMD 0x%02X ignorato: sensore ruota non connesso", cmd);
 }
 
 void ble_sensors_on_sync(void) {
@@ -652,4 +884,39 @@ void ble_sensors_trigger_lap(void) {
 
 void ble_sensors_set_wheel_circumference(float meters) {
     s_wheel_circ_m = meters;
+    wheel_push_config();   /* propaga al sensore ruota se connesso (0xBB04) */
+}
+
+void ble_sensors_set_rider_mass(float kg) {
+    s_rider_mass_kg = kg;
+    wheel_push_config();
+}
+
+/* ── Discovery (0xaa0e) ──────────────────────────────────────────────────── */
+static void _disc_timeout_cb(void *arg) {
+    (void)arg;
+    ble_sensors_set_discovery(false);   /* auto-stop dopo ~15 s */
+}
+
+void ble_sensors_set_discovery(bool on) {
+    s_discovery = on;
+    if (on) {
+        s_seen_n = 0;
+        ESP_LOGI(TAG, "Discovery sensori ON");
+        if (!s_disc_timer) {
+            const esp_timer_create_args_t ta = {
+                .callback = _disc_timeout_cb, .name = "sens_disc",
+            };
+            esp_timer_create(&ta, &s_disc_timer);
+        }
+        esp_timer_stop(s_disc_timer);
+        esp_timer_start_once(s_disc_timer, 15000000ULL);   /* 15 s */
+        if (s_nimble_synced) start_scan();
+    } else {
+        ESP_LOGI(TAG, "Discovery sensori OFF");
+        if (s_disc_timer) esp_timer_stop(s_disc_timer);
+        if (s_nimble_synced && ble_gap_disc_active()) ble_gap_disc_cancel();
+        /* Riprende lo scan normale (connessione ai whitelisted) */
+        if (s_nimble_synced) start_scan_delayed();
+    }
 }

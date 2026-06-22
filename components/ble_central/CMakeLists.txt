@@ -6,4 +6,6 @@ idf_component_register(
     REQUIRES
         bt
         freertos
+    PRIV_REQUIRES
+        nvs_flash
 )

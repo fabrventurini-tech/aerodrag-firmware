@@ -1,6 +1,32 @@
 #pragma once
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
+#include <sys/time.h>
+
+// ─── Orologio oggettivo (UTC) — contract v0.3.0 ──────────────────────────────
+// Sorgente unica: l'orologio di sistema (settimeofday/gettimeofday). L'app lo
+// imposta alla connessione via BLE TIME (0xaa10); i frame portano `tUtc`.
+// Convenzione condivisa con il contratto: tUtc == 0 ⇒ orologio NON impostato
+// (epoch < 2020-01-01). Nessuno stato duplicato altrove.
+#define AERODRAG_EPOCH_MIN_MS  1577836800000ULL   // 2020-01-01T00:00:00Z
+
+static inline void aerodrag_time_set_epoch_ms(uint64_t ms)
+{
+    struct timeval tv;
+    tv.tv_sec  = (time_t)(ms / 1000ULL);
+    tv.tv_usec = (suseconds_t)((ms % 1000ULL) * 1000ULL);
+    settimeofday(&tv, NULL);
+}
+
+// Epoch UTC in ms, oppure 0 se l'orologio non è ancora stato impostato.
+static inline uint64_t aerodrag_time_get_epoch_ms(void)
+{
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    uint64_t ms = (uint64_t)tv.tv_sec * 1000ULL + (uint64_t)(tv.tv_usec / 1000);
+    return (ms < AERODRAG_EPOCH_MIN_MS) ? 0ULL : ms;
+}
 
 // ─── Device identity ─────────────────────────────────────────────────────────
 // Ogni device ha un ID univoco derivato dal MAC address dell'ESP32.
@@ -100,6 +126,7 @@ typedef struct {
     float   mass_kg;          // kg  — set by app via BLE 0xaa08
     float   crr;              // rolling resistance coeff — set by app via BLE 0xaa08
     float   cda_target;
+    float   wheel_circ_m;     // circonferenza ruota [m] — set by app via BLE 0xaa08 (v0.2.0, app-authoritative)
     uint32_t crc;
 } aerodrag_cal_t;
 

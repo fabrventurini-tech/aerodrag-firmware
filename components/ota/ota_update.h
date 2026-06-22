@@ -3,7 +3,9 @@
  * AeroDrag OTA Firmware Update
  * ─────────────────────────────────────────────────────────────────────────────
  * Scarica e installa un nuovo firmware via HTTP (Pi locale o server HTTP).
- * La partizione ota_0 (4 MB) e otadata sono già presenti in partitions.csv.
+ * Schema A/B in partitions.csv: due slot ota_0/ota_1 da 4 MB — ogni OTA
+ * scrive nello slot non in esecuzione, quindi gli aggiornamenti sono
+ * ripetibili indefinitamente.
  *
  * Trigger:
  *   WiFi: coach invia {"type":"cmd","action":"ota","url":"http://192.168.8.1:8080/fw.bin"}
@@ -22,7 +24,7 @@
 
 #define OTA_TAG         "ota"
 #define OTA_BUF_SIZE    4096
-#define OTA_URL_MAXLEN   200
+#define OTA_URL_MAXLEN   257   /* contratto: URL OTA ≤256 byte + NUL */
 
 typedef enum {
     OTA_IDLE    = 0,
@@ -34,6 +36,7 @@ typedef enum {
 static volatile ota_status_t g_ota_status   = OTA_IDLE;
 static volatile uint8_t      g_ota_progress = 0;   // 0-100 %
 static char                  g_ota_pending_url[OTA_URL_MAXLEN] = {0};
+static portMUX_TYPE          g_ota_mux = portMUX_INITIALIZER_UNLOCKED;
 
 static void ota_task(void *arg)
 {
@@ -145,18 +148,26 @@ static void ota_task(void *arg)
  */
 void ota_start(const char *url)
 {
-    if (g_ota_status == OTA_RUNNING) {
-        ESP_LOGW(OTA_TAG, "OTA già in corso — ignorato");
-        return;
-    }
     if (!url || strlen(url) == 0 || strlen(url) >= OTA_URL_MAXLEN) {
         ESP_LOGE(OTA_TAG, "URL non valido");
         g_ota_status = OTA_FAILED;
         return;
     }
-    strlcpy(g_ota_pending_url, url, OTA_URL_MAXLEN);
+    /* Gate atomico check-and-set: due chiamanti (BLE 0xaa07 e WiFi coach OTA)
+     * potrebbero entrambi superare il check ~RUNNING e lanciare DUE task sullo
+     * stesso buffer g_ota_pending_url → corruzione. Sezione critica per
+     * impostare RUNNING prima di rilasciare; il secondo perde e ritorna. */
+    portENTER_CRITICAL(&g_ota_mux);
+    if (g_ota_status == OTA_RUNNING) {
+        portEXIT_CRITICAL(&g_ota_mux);
+        ESP_LOGW(OTA_TAG, "OTA già in corso — ignorato");
+        return;
+    }
     g_ota_status   = OTA_RUNNING;
+    portEXIT_CRITICAL(&g_ota_mux);
+
     g_ota_progress = 0;
+    strlcpy(g_ota_pending_url, url, OTA_URL_MAXLEN);
     xTaskCreate(ota_task, "ota", 8192, g_ota_pending_url, 3, NULL);
     ESP_LOGI(OTA_TAG, "Task OTA avviato → %s", g_ota_pending_url);
 }

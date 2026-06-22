@@ -98,9 +98,11 @@ esp_err_t sdp810_read(sdp810_t *dev)
     dev->pressure_pa = (float)dp_raw   / SDP810_PRESSURE_SCALE;
     dev->temp_c      = (float)temp_raw / SDP810_TEMP_SCALE;
 
-    // Physical clamp (0-500 Pa range of sensor)
-    if (dev->pressure_pa < 0.0f)   dev->pressure_pa = 0.0f;
-    if (dev->pressure_pa > 500.0f) dev->pressure_pa = 500.0f;
+    // Physical clamp — sensore differenziale ±500 Pa. Non azzerare i
+    // negativi: la calibrazione (do_calibration) media il valore grezzo
+    // e un offset negativo troncato a 0 falserebbe lo zero del Pitot.
+    if (dev->pressure_pa < -500.0f) dev->pressure_pa = -500.0f;
+    if (dev->pressure_pa >  500.0f) dev->pressure_pa =  500.0f;
 
     return ESP_OK;
 }
