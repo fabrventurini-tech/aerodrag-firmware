@@ -33,6 +33,12 @@ typedef struct {
     float roll_deg;
     float yaw_deg;
     float temp_c;
+    // Raw inertial samples (ISSUE #30 auto-zero: rilevatore immobilita').
+    // Popolati a ogni qmi8658_read riuscito; raw_valid=false all'init e azzerato
+    // sul ramo di fallimento I2C, cosi' non si usano mai grezzi stantii.
+    float   gyro_dps[3];    // gx,gy,gz istantanei [deg/s]
+    float   accel_ms2[3];   // ax,ay,az istantanei [m/s^2]
+    bool    raw_valid;      // true solo dopo un read I2C riuscito
     // Filter state
     float pitch_acc;
     float roll_acc;
@@ -57,6 +63,9 @@ esp_err_t qmi8658_init(qmi8658_t *dev, i2c_port_t port, uint8_t addr)
     dev->roll_deg  = 0.0f;
     dev->yaw_deg   = 0.0f;
     dev->last_us   = 0;
+    dev->raw_valid = false;
+    dev->gyro_dps[0] = dev->gyro_dps[1] = dev->gyro_dps[2] = 0.0f;
+    dev->accel_ms2[0] = dev->accel_ms2[1] = dev->accel_ms2[2] = 0.0f;
 
     /* WHO_AM_I (atteso 0x05). Il QMI8658 risponde a 0x6A o 0x6B a seconda
      * del livello del pin SA0, che cambia tra revisioni della scheda:
@@ -102,7 +111,7 @@ esp_err_t qmi8658_read(qmi8658_t *dev)
 {
     uint8_t buf[12];  // 6 bytes acc + 6 bytes gyro
     esp_err_t ret = qmi_read(dev, QMI8658_REG_AX_L, buf, 12);
-    if (ret != ESP_OK) return ret;
+    if (ret != ESP_OK) { dev->raw_valid = false; return ret; }  // ISSUE #30: no grezzi stantii
 
     int16_t ax_raw = (int16_t)((buf[1] << 8) | buf[0]);
     int16_t ay_raw = (int16_t)((buf[3] << 8) | buf[2]);
@@ -148,6 +157,12 @@ esp_err_t qmi8658_read(qmi8658_t *dev)
         int16_t t_raw = (int16_t)((tbuf[1] << 8) | tbuf[0]);
         dev->temp_c = (float)t_raw / 256.0f;
     }
+
+    // ISSUE #30: salva i grezzi (finora locali e scartati) per il rilevatore di
+    // immobilita'. Si arriva qui solo dopo un read I2C riuscito.
+    dev->accel_ms2[0] = ax; dev->accel_ms2[1] = ay; dev->accel_ms2[2] = az;
+    dev->gyro_dps[0]  = gx; dev->gyro_dps[1]  = gy; dev->gyro_dps[2]  = gz;
+    dev->raw_valid = true;
 
     return ESP_OK;
 }

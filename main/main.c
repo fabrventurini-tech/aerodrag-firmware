@@ -147,6 +147,162 @@ static int64_t g_last_cad_us   = 0;
 // Letture I2C fallite consecutive prima di invalidare il sensore (~1 s a 10 Hz)
 #define SENSOR_FAIL_LIMIT 10
 
+// ─── ISSUE #30: auto-zero Pitot silenzioso ────────────────────────────────────
+// Soglie iniziali (DA TARARE SU HW).
+#define AZ_GYRO_MAX_DPS      2.0f                 // |gyro| per-asse [deg/s]
+#define AZ_ACCEL_G_TOL       0.5f                 // ||a|-9.80665| <= 0.5 m/s^2
+#define AZ_PITOT_STD_MAX_PA  1.0f                 // std-dev Pitot finestra dwell [Pa]
+#define AZ_SPEED_MAX_MS      0.3f                 // corroborante speed [m/s]
+#define AZ_T_STILL_US        (4LL * 1000 * 1000)  // dwell 4 s (tempo reale)
+#define AZ_MIN_DWELL_SAMPLES 30                    // >=30 campioni Pitot validi
+#define AZ_PERSIST_EPS_PA    0.2f                 // persisti solo se |nuovo-salvato| > eps
+#define AZ_PERSIST_MIN_US    (5LL * 60 * 1000 * 1000) // >=5 min fra due persist NVS
+#define AZ_OFFSET_SANE_PA    300.0f               // |offset| plausibile <= 300 Pa
+#define AZ_GRAVITY_MS2       9.80665f
+
+// Running-stats Welford O(1): media+varianza incrementali, niente ring-buffer.
+typedef struct {
+    uint32_t n;
+    double   mean;
+    double   m2;     // var = m2/(n-1)
+} running_stats_t;
+
+typedef enum { AZ_IDLE = 0, AZ_DWELL } az_state_t;
+
+static az_state_t      g_az_state          = AZ_IDLE;
+static running_stats_t g_az_pitot;
+static int64_t         g_az_dwell_start_us = 0;
+
+// Stato persistenza — FUORI dal blob aerodrag_cal_t (layout/CRC NVS invariati).
+// Tutti gli accessi RMW vanno sotto SENSORS_LOCK (vedi az_*persist).
+static float           g_last_saved_offset_pa = 0.0f;  // init da cal_load
+static int64_t         g_last_persist_us      = 0;
+static volatile bool   g_cal_persist_req      = false; // set da disconnect/config BLE
+
+// Setter del flag persist, chiamato dal contesto host NimBLE (vedi ble_server.h).
+void cal_request_persist(void) { g_cal_persist_req = true; }
+
+static inline void rs_reset(running_stats_t *rs)
+{
+    rs->n = 0; rs->mean = 0.0; rs->m2 = 0.0;
+}
+
+static inline void rs_push(running_stats_t *rs, float x)
+{
+    if (!isfinite(x)) return;                 // scarta NaN/inf
+    rs->n++;
+    double d  = (double)x - rs->mean;
+    rs->mean += d / (double)rs->n;
+    rs->m2   += d * ((double)x - rs->mean);
+}
+
+static inline float rs_mean(const running_stats_t *rs)
+{
+    return (rs->n > 0) ? (float)rs->mean : 0.0f;
+}
+
+static inline float rs_std(const running_stats_t *rs)
+{
+    if (rs->n < 2) return 0.0f;
+    double var = rs->m2 / (double)(rs->n - 1);
+    if (var < 0.0) var = 0.0;
+    return (float)sqrt(var);
+}
+
+// Gating istantaneo: true se il ciclo corrente e' 'fermo'. imu_ok = IMU letta
+// CON SUCCESSO in QUESTO ciclo (chiude la finestra di grezzi stantii).
+static bool az_instant_still(const aerodrag_sensors_t *s, bool imu_ok)
+{
+    if (!imu_ok || !g_imu.raw_valid || !s->imu_valid) return false;
+    for (int i = 0; i < 3; i++) {
+        float g = g_imu.gyro_dps[i];
+        if (!isfinite(g) || fabsf(g) > AZ_GYRO_MAX_DPS) return false;
+    }
+    float ax = g_imu.accel_ms2[0], ay = g_imu.accel_ms2[1], az = g_imu.accel_ms2[2];
+    if (!isfinite(ax) || !isfinite(ay) || !isfinite(az)) return false;
+    float amag = sqrtf(ax*ax + ay*ay + az*az);   // norma invariante per rotazione
+    if (fabsf(amag - AZ_GRAVITY_MS2) > AZ_ACCEL_G_TOL) return false;
+    // Corroboranti vincolanti solo se la sorgente e' valida.
+    if (s->gps_valid && s->speed_ms > AZ_SPEED_MAX_MS) return false;
+    if (s->ant_valid && s->power_w != 0)               return false;
+    return true;
+}
+
+// Guardia di varianza condivisa (auto-zero + long-press). Su true scrive *mean_pa.
+static bool pitot_window_ok(const running_stats_t *rs, float *mean_pa)
+{
+    if (rs->n < AZ_MIN_DWELL_SAMPLES) return false;
+    float std = rs_std(rs);
+    if (!isfinite(std) || std > AZ_PITOT_STD_MAX_PA) return false;   // reject varianza
+    float m = rs_mean(rs);
+    if (!isfinite(m) || fabsf(m) > AZ_OFFSET_SANE_PA) return false;  // offset implausibile
+    if (mean_pa) *mean_pa = m;
+    return true;
+}
+
+// Esegue il persist NVS reale se serve. CHIAMARE SOLO da task_housekeeping (o
+// shutdown). Serializza confronto+commit+aggiornamento stato sotto SENSORS_LOCK.
+// force=true bypassa il rate-limit (shutdown/disconnect), rispetta sempre eps.
+static void cal_do_persist(bool force)
+{
+    SENSORS_LOCK();
+    int64_t now    = esp_timer_get_time();
+    float   cur    = g_cal.pitot_offset_pa;
+    bool    do_it  = (fabsf(cur - g_last_saved_offset_pa) > AZ_PERSIST_EPS_PA) &&
+                     (force || (now - g_last_persist_us) >= AZ_PERSIST_MIN_US);
+    aerodrag_cal_t snap;
+    if (do_it) snap = g_cal;          // snapshot coerente del blob sotto lock
+    SENSORS_UNLOCK();
+
+    if (!do_it) return;
+    if (cal_persist(&snap) == ESP_OK) {
+        SENSORS_LOCK();
+        g_last_saved_offset_pa = snap.pitot_offset_pa;
+        g_last_persist_us      = now;
+        SENSORS_UNLOCK();
+    }
+}
+
+// FSM del rilevatore, chiamata una volta per ciclo del loop sensori.
+// Solo set-RAM dell'offset (sotto lock); il commit NVS lo fa housekeeping.
+static void az_step(esp_err_t pitot_ret, float pitot_raw_pa,
+                    const aerodrag_sensors_t *s, bool imu_ok)
+{
+    bool still = az_instant_still(s, imu_ok);
+
+    switch (g_az_state) {
+    case AZ_IDLE:
+        if (still) {
+            rs_reset(&g_az_pitot);
+            g_az_dwell_start_us = esp_timer_get_time();
+            g_az_state = AZ_DWELL;
+        }
+        break;
+
+    case AZ_DWELL:
+        if (!still) {                       // violazione -> reset duro
+            g_az_state = AZ_IDLE;
+            rs_reset(&g_az_pitot);
+            break;
+        }
+        if (pitot_ret == ESP_OK) rs_push(&g_az_pitot, pitot_raw_pa);
+        if (esp_timer_get_time() - g_az_dwell_start_us >= AZ_T_STILL_US) {
+            float mean_pa;
+            if (pitot_window_ok(&g_az_pitot, &mean_pa)) {
+                SENSORS_LOCK();
+                cal_zero_pitot(&g_cal, mean_pa);   // SOLO RAM, silenzioso
+                SENSORS_UNLOCK();
+                g_cal_persist_req = true;          // NVS deferito a housekeeping
+                ESP_LOGI(TAG, "auto-zero: offset=%.2f Pa n=%d std=%.2f",
+                         mean_pa, (int)g_az_pitot.n, rs_std(&g_az_pitot));
+            } // varianza alta / pochi campioni -> skip SILENZIOSO
+            g_az_state = AZ_IDLE;
+            rs_reset(&g_az_pitot);
+        }
+        break;
+    }
+}
+
 static void task_pitot_imu(void *arg)
 {
     TickType_t wake = xTaskGetTickCount();
@@ -262,6 +418,10 @@ static void task_pitot_imu(void *arg)
 
         aerodrag_sensors_t sensors_copy = g_sensors;
         SENSORS_UNLOCK();
+
+        // ISSUE #30: rilevatore immobilita' + auto-zero silenzioso. Pitot GREZZO
+        // (pre-offset) del ciclo; imu_ok = IMU letta con successo in QUESTO ciclo.
+        az_step(pitot_ret, g_pitot.pressure_pa, &sensors_copy, imu_ok);
 
         if (pitot_lost) ESP_LOGW(TAG, "Pitot: %d letture fallite — invalidato", SENSOR_FAIL_LIMIT);
         if (imu_lost)   ESP_LOGW(TAG, "IMU: %d letture fallite — invalidato",   SENSOR_FAIL_LIMIT);
@@ -381,6 +541,7 @@ static void task_display(void *arg)
 // il deep sleep senza sorgenti di wakeup è il fallback quando si è sotto USB.
 static void power_off(void)
 {
+    cal_do_persist(true);   // ISSUE #30: salva l'ultimo offset RAM prima dello spegnimento (force)
     gpio_set_level(PIN_PWR_HOLD, 0);
     vTaskDelay(pdMS_TO_TICKS(200));
     esp_deep_sleep_start();
@@ -397,6 +558,14 @@ static void task_housekeeping(void *arg)
         g_sensors.battery_pct = g_bat.last_pct;
         g_sensors.battery_mv  = g_bat.last_mv;
         SENSORS_UNLOCK();
+
+        // ISSUE #30: UNICO scrittore NVS del blob g_cal. Consuma le richieste di
+        // persist (auto-zero/disconnect/config BLE) fuori dal loop sensori 10 Hz,
+        // cosi' l'erase/commit (decine-centinaia di ms) non ne disturba la cadenza.
+        if (g_cal_persist_req) {
+            g_cal_persist_req = false;
+            cal_do_persist(false);   // rate-limited (eps + >=5 min)
+        }
 
         ble_notify_battery(g_bat.last_pct);
 
@@ -470,30 +639,39 @@ static void btn_init(void)
 // ─── Calibration procedure ───────────────────────────────────────────────────────────────────────────
 static void do_calibration(void)
 {
-    ESP_LOGI(TAG, "Calibration: averaging Pitot over 5 seconds...");
-    g_state = STATE_CALIBRATING;
-    display_show_toast("CALIBRATING", 30000);
+    // ISSUE #30 punto 3: long-press = override esplicito, ma con la STESSA
+    // guardia di varianza dell'auto-zero (silenziosa). Su varianza alta tiene
+    // il vecchio offset (skip silenzioso). Feedback minimo "ZERO OK" solo a
+    // successo (rimosso STATE_CALIBRATING + toast "CALIBRATING" 30 s).
+    ESP_LOGI(TAG, "Manual zero: averaging Pitot over 5 seconds...");
 
-    float sum = 0;
-    int   n   = 0;
+    running_stats_t rs;
+    rs_reset(&rs);
     int64_t start = esp_timer_get_time();
     while (esp_timer_get_time() - start < 5000000LL) {
         I2C1_LOCK();
         esp_err_t ret = sdp810_read(&g_pitot);
+        float raw = g_pitot.pressure_pa;
         I2C1_UNLOCK();
-        if (ret == ESP_OK) {
-            sum += g_pitot.pressure_pa;
-            n++;
-        }
+        if (ret == ESP_OK) rs_push(&rs, raw);   // GREZZO (letto sotto I2C lock)
         vTaskDelay(pdMS_TO_TICKS(100));
     }
-    if (n > 0) {
-        cal_zero_pitot(&g_cal, sum / n);
-        ESP_LOGI(TAG, "Pitot zero offset set to %.4f Pa (avg of %d samples)",
-                 g_cal.pitot_offset_pa, n);
+
+    float mean_pa;
+    if (pitot_window_ok(&rs, &mean_pa)) {
+        // Set-RAM serializzato col sensor task / callback BLE (mutex condiviso).
+        SENSORS_LOCK();
+        cal_zero_pitot(&g_cal, mean_pa);
+        SENSORS_UNLOCK();
+        // Override manuale = persist immediato (force): bypassa rate-limit, eps.
+        cal_do_persist(true);
+        display_show_toast("ZERO OK", 2000);
+        ESP_LOGI(TAG, "Manual zero: offset=%.2f Pa n=%d std=%.2f",
+                 mean_pa, (int)rs.n, rs_std(&rs));
+    } else {
+        ESP_LOGW(TAG, "Manual zero rifiutato: std=%.2f Pa n=%d (vecchio offset tenuto)",
+                 rs_std(&rs), (int)rs.n);
     }
-    display_clear_toast();
-    g_state = STATE_CONNECTED;
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────────────────────
@@ -512,6 +690,10 @@ void app_main(void)
 
     identity_init();
     cal_load(&g_cal);
+    // ISSUE #30: stato persistenza inizializzato a cio' che e' realmente su NVS.
+    // g_last_persist_us=0 -> il primo auto-zero >eps puo' persistere subito.
+    g_last_saved_offset_pa = g_cal.pitot_offset_pa;
+    g_last_persist_us      = 0;
     ESP_LOGI(TAG, "Calibration loaded: pitot_offset=%.4f Pa, mass=%.1f kg",
              g_cal.pitot_offset_pa, g_cal.mass_kg);
 
@@ -610,6 +792,7 @@ void app_main(void)
         }
         if (g_state == STATE_LOW_BATTERY) {
             ESP_LOGW(TAG, "Shutting down — battery critical");
+            cal_do_persist(true);   // ISSUE #30: salva offset prima dello stop sensori (force)
             sdp810_stop(&g_pitot);
             vTaskDelay(pdMS_TO_TICKS(500));
             power_off();
