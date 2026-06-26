@@ -16,6 +16,11 @@ static aerodrag_cal_t      *g_cal_ptr = NULL;
 #include "ota_update.h"
 #include <string.h>
 
+// ISSUE #30: persist offset Pitot — definita in main.c. Dichiarata QUI (prima di
+// ble_gap_event caso DISCONNECT e di config_access_cb, che la usano). NON chiamare
+// NVS dal contesto host NimBLE: setta solo un flag, la scrittura la fa housekeeping.
+extern void cal_request_persist(void);
+
 // ─── Service and characteristic UUIDs ────────────────────────────────────────
 static const ble_uuid128_t SVC_UUID = BLE_UUID128_INIT(
     0xfb, 0x34, 0x9b, 0x5f, 0x80, 0x00, 0x00, 0x80,
@@ -213,6 +218,9 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
         g_notify_pitot = g_notify_imu = g_notify_env = g_notify_ant =
         g_notify_battery = g_notify_physics = g_notify_wheel =
         g_notify_scan = g_notify_coach = false;
+        // ISSUE #30: persisti l'eventuale offset auto-zerato a fine sessione.
+        // Solo un flag: la scrittura NVS avviene in task_housekeeping, mai qui.
+        cal_request_persist();
         ble_advertise();
         break;
     case BLE_GAP_EVENT_SUBSCRIBE:
@@ -377,10 +385,16 @@ static int config_access_cb(uint16_t conn_handle, uint16_t attr_handle,
         wheel_m == g_cal_ptr->wheel_circ_m)
         return 0;
 
+    // ISSUE #30: serializza la mutazione del blob g_cal col sensor task
+    // (az_step) e con do_calibration (mutex condiviso = g_sensors_mutex).
+    // La scrittura NVS NON avviene qui (contesto host NimBLE): si richiede via
+    // flag e la esegue task_housekeeping, unico scrittore NVS del blob.
+    if (g_ble_sensors_mutex) xSemaphoreTake(g_ble_sensors_mutex, portMAX_DELAY);
     g_cal_ptr->mass_kg      = mass_kg;
     g_cal_ptr->crr          = crr;
     g_cal_ptr->wheel_circ_m = wheel_m;
-    cal_save(g_cal_ptr);
+    if (g_ble_sensors_mutex) xSemaphoreGive(g_ble_sensors_mutex);
+    cal_request_persist();
     ble_sensors_set_wheel_circumference(wheel_m);
     ble_sensors_set_rider_mass(mass_kg);   /* propaga al sensore ruota (0xBB04) */
 

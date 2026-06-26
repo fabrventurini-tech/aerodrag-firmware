@@ -5,6 +5,7 @@
 #include "aerodrag_types.h"
 #include "board_pins.h"
 #include <string.h>
+#include <math.h>
 
 // ─── Battery ADC ──────────────────────────────────────────────────────────────
 // ESP32-S3-Touch-LCD-2.8: GPIO8 → 200K + 100K divider → Vbat/3
@@ -130,8 +131,22 @@ esp_err_t cal_save(const aerodrag_cal_t *cal)
     return ret;
 }
 
+// ISSUE #30: persist NVS come alias semantico di cal_save. La guardia
+// epsilon + rate-limit + la serializzazione (mutex) stanno NEL CHIAMANTE
+// (main.c). cal_save resta invariata (ancora usata dal config callback BLE).
+esp_err_t cal_persist(const aerodrag_cal_t *cal)
+{
+    return cal_save(cal);
+}
+
+// ISSUE #30: cal_zero_pitot ora setta SOLO la RAM (silenzioso, niente NVS).
+// La persistenza e' separata in cal_persist, deferita a task_housekeeping.
+// Il CHIAMANTE serializza la scrittura di pitot_offset_pa sotto g_sensors_mutex.
+// Clamp difensivo: mai NaN/inf in RAM, range fisico SDP810 +/-500 Pa.
 void cal_zero_pitot(aerodrag_cal_t *cal, float current_pa)
 {
+    if (!isfinite(current_pa)) return;
+    if (current_pa >  500.0f) current_pa =  500.0f;
+    if (current_pa < -500.0f) current_pa = -500.0f;
     cal->pitot_offset_pa = current_pa;
-    cal_save(cal);
 }
