@@ -1,7 +1,7 @@
 # AeroDrag — Interface Contract
 
 ```
-contract: v0.3.3
+contract: v0.3.4
 owner:    aerodrag-firmware (questa repo è la fonte di verità unica)
 status:   ratified
 date:     2026-06-26
@@ -132,6 +132,9 @@ Principio: i sensori esterni (power `0x1818`, CSC `0x1816`, HR `0x180D`, sensore
 ruota Crr `0xBB00`) si **bondano SOLO al firmware**. L'app è **broker di pairing
 + specchio**: non apre connessioni dati ai sensori (elimina il cross-talk dalle
 bici vicine; il firmware resta l'unica fonte di verità).
+> **(v0.3.4)** Per il sensore ruota `0xBB00` il bonding non è più solo aspirazionale
+> (whitelist MAC lato central): diventa un **requisito di cifratura** del confine G —
+> vedi §2.G «Sicurezza del confine G».
 - **Pairing**: l'app scansiona per far **scegliere** il sensore all'utente, ne
   ottiene il MAC e scrive l'elenco autorizzato in **`SENSOR_WHITELIST` (0xaa0b)**.
   Il central del firmware si connette **esclusivamente** ai MAC in whitelist
@@ -233,6 +236,30 @@ l'ESP32 (central) consuma:
 Governance: modifiche a `0xBB00` passano dalla seam `firmware↔wheel` (le due parti
 vivono in **repo distinti** — firmware in `aerodrag-firmware`, sensore ruota in
 `aerodrag-wheel` — e restano firmware distinti) e dalla ratifica qui.
+
+##### Sicurezza del confine G — bonding + cifratura obbligatori (v0.3.4)
+Il collegamento `0xBB00` **DEVE** essere cifrato e bondato (LE Security Mode 1,
+Level ≥ 2). **Nessun cambiamento al wire/payload**: STREAM/RESULT/CMD/CONFIG restano
+invariati byte-per-byte; cambia solo il **link-layer**.
+
+- **ESP32 (central):** avvia la security sulla connessione a `0xBB00`
+  (`ble_gap_security_initiate`) e attende l'**encryption-change** **prima** di
+  sottoscrivere `0xBB01` o scrivere `0xBB03`/`0xBB04`. Persiste il bond.
+- **Wheel (peripheral):** richiede la cifratura sulle scritture sensibili —
+  `BT_GATT_PERM_WRITE_ENCRYPT` (≥) su `CMD 0xBB03` e `CONFIG 0xBB04` (+ policy su
+  STREAM/CCC); `bt_conn_set_security(L2+)` in `on_connected`; **accept-list /
+  directed advertising** verso il bond ESP32. Persiste il bond.
+- **Effetto:** un central terzo non può più avviare/cancellare un coast-down né
+  alterare circonferenza/massa (`0xBB04`, che il core persiste su flash); lo STREAM
+  non è più leggibile in chiaro. Chiude la 🔴 HIGH «`0xBB00` in chiaro»
+  (`aerodrag-wheel#2`).
+
+**Rollout (vincolante — unico ordine sicuro):** prima atterra l'**ESP32** (avvia la
+security), **poi** il **wheel** la pretende. Far pretendere la cifratura al wheel
+mentre l'ESP32 non la avvia **staccherebbe** il central legittimo. Finché entrambi i
+lati non hanno aggiornato e bondato su HW, il confine opera in **compatibilità (in
+chiaro)** come in v0.3.3. Spec-di-record e stato del rollout: seam `firmware↔wheel`
+(**#21**).
 
 ---
 
@@ -486,6 +513,26 @@ grezzo ad alta frequenza (vedi forward-compat in §3) e l'identità atleta-centr
 ---
 
 ## 9. Changelog
+
+### v0.3.4 — 2026-06-26
+**Requisito di sicurezza sul confine G (firmware ↔ wheel, `0xBB00`).** Non è un'errata
+documentale: aggiunge un **requisito comportamentale** al link. **Nessun cambio di
+wire/payload** (STREAM/RESULT/CMD/CONFIG invariati byte-per-byte) → resta sulla linea
+**0.3.x**; il bump **0.4.0** resta riservato al bundle status-byte (#32) + cloud §7.
+⚠️ Nota SemVer: rendere la cifratura *obbligatoria* è interop-influente verso un build
+in chiaro → mitigato dal **rollout bilaterale stadiato** (vedi §2.G «Sicurezza del
+confine G»).
+- **§2.G:** il collegamento `0xBB00` DEVE essere cifrato + bondato (LE SM1 L≥2). L'ESP32
+  central avvia la security (`ble_gap_security_initiate`) prima di subscribe/write; il
+  wheel gate `CMD 0xBB03`/`CONFIG 0xBB04` dietro `PERM_WRITE_ENCRYPT` +
+  `bt_conn_set_security` + accept-list. Chiude la 🔴 HIGH «`0xBB00` in chiaro»
+  (`aerodrag-wheel#2`).
+- **§2 (whitelist & relay):** il bonding del sensore ruota, finora solo aspirazionale
+  (whitelist MAC lato central), diventa requisito reale del confine G.
+- **Rollout (vincolante):** ESP32-first → wheel-after → verifica HW (bond bilaterale,
+  riconnessione post power-cycle, reject di un central terzo). Spec-di-record: seam #21.
+- Da implementare nelle chat figlie: ESP32 (`aerodrag-firmware`, central) e wheel
+  (`aerodrag-wheel`, peripheral, già pronto al passo 2).
 
 ### v0.3.3 — 2026-06-26
 **Errata (PATCH: solo documentazione, nessuna modifica al wire).** Allineamento §3 alla
