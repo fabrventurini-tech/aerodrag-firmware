@@ -177,6 +177,14 @@ static void ble_advertise(void)
     fields.tx_pwr_lvl            = BLE_HS_ADV_TX_PWR_LVL_AUTO;
     fields.tx_pwr_lvl_is_present = 1;
 
+    // Pubblicizza il servizio primario 0xAA00 (UUID-base SIG di SVC_UUID) così
+    // l'app lo scopre con startDeviceScan([SVC]) — Android/iOS filtrano lo scan
+    // per service UUID, che dev'essere presente nell'advertising (fix #27).
+    static const ble_uuid16_t adv_svc16 = BLE_UUID16_INIT(0xAA00);
+    fields.uuids16             = (ble_uuid16_t *)&adv_svc16;
+    fields.num_uuids16         = 1;
+    fields.uuids16_is_complete = 1;
+
     ble_gap_adv_set_fields(&fields);
     ble_gap_adv_start(BLE_OWN_ADDR_PUBLIC, NULL, BLE_HS_FOREVER,
                       &adv_params, ble_gap_event, NULL);
