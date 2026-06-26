@@ -10,6 +10,8 @@ static aerodrag_cal_t      *g_cal_ptr = NULL;
 #include "host/ble_uuid.h"
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
+#include "store/config/ble_store_config.h"   /* ble_store_config_init (bond NVS) */
+#include "host/util/util.h"                    /* ble_store_util_delete_peer (REPEAT_PAIRING) */
 #include "aerodrag_types.h"
 #include "ble_sensors.h"
 #include "version.h"
@@ -243,6 +245,15 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
         else if (event->subscribe.attr_handle == g_chr_coachlink_h)
             g_notify_coach = event->subscribe.cur_notify;
         break;
+    case BLE_GAP_EVENT_REPEAT_PAIRING: {
+        /* Host condiviso: il telefono ha un bond stale (es. dopo factory-reset
+         * del peer). Cancella il vecchio bond e ritenta il pairing, altrimenti
+         * la riconnessione fallirebbe con BLE_HS_EREPEAT_PAIRING. */
+        struct ble_gap_conn_desc desc;
+        if (ble_gap_conn_find(event->repeat_pairing.conn_handle, &desc) == 0)
+            ble_store_util_delete_peer(&desc.peer_id_addr);
+        return BLE_GAP_REPEAT_PAIRING_RETRY;
+    }
     default:
         break;
     }
@@ -648,6 +659,24 @@ esp_err_t ble_server_init(aerodrag_sensors_t *sensors, SemaphoreHandle_t mutex,
     if (ret != ESP_OK) return ret;
     ret = ble_gatts_add_svcs(GATT_SERVICES);
     if (ret != ESP_OK) return ret;
+
+    /* ── §2.G v0.3.4: bonding + cifratura del confine G (wheel 0xBB00) ──
+     * Host NimBLE UNICO/condiviso (peripheral app + central sensori): questi
+     * flag SM abilitano la CAPACITA' di bonding LE Secure Connections.
+     * - Il central inizia security_initiate SOLO verso il wheel (ble_sensors.c);
+     *   verso il telefono nessun upgrade forzato e le chr peripheral (0xAA*) non
+     *   hanno permessi _ENC => bonding OPPORTUNISTICO, pairing app compatibile
+     *   (Just Works, nessun PIN).
+     * - sm_sc=1 => LE SC (AES-CCM) => LE Security Mode 1 Level >= 2.
+     * - sm_mitm=0 + NO_INPUT_OUTPUT => Just Works (Level 2 unauthenticated).
+     * - key_dist ENC|ID => LTK+IRK => riconnessione col bond salvato, no ri-pairing. */
+    ble_hs_cfg.sm_bonding        = 1;
+    ble_hs_cfg.sm_sc             = 1;
+    ble_hs_cfg.sm_mitm           = 0;
+    ble_hs_cfg.sm_io_cap         = BLE_HS_IO_NO_INPUT_OUTPUT;
+    ble_hs_cfg.sm_our_key_dist   = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
+    ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
+    ble_store_config_init();   /* aggancia store_read/write/delete su NVS (NVS_PERSIST=y) */
 
     ble_hs_cfg.sync_cb = on_sync;
 

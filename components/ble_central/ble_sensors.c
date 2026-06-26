@@ -28,6 +28,7 @@
 
 #include "host/ble_hs.h"
 #include "host/ble_gap.h"
+#include "host/util/util.h"   /* ble_store_util_delete_peer (REPEAT_PAIRING) */
 
 #include "host/ble_uuid.h"
 #include "os/os_mbuf.h"
@@ -79,11 +80,22 @@ static uint16_t type_to_svc(uint8_t type) {
 typedef enum {
     SLOT_IDLE        = 0,
     SLOT_CONNECTING  = 1,
-    SLOT_DISC_SVC    = 2,
-    SLOT_DISC_CHR    = 3,
-    SLOT_SUBSCRIBING = 4,
-    SLOT_READY       = 5,
+    SLOT_SECURING    = 2,   /* solo wheel: connesso, attesa ENC_CHANGE (§2.G) */
+    SLOT_DISC_SVC    = 3,
+    SLOT_DISC_CHR    = 4,
+    SLOT_SUBSCRIBING = 5,
+    SLOT_READY       = 6,
 } slot_state_t;
+
+/* §2.G v0.3.4: esito della cifratura per-slot. Solo il wheel (0xBB00) tenta la
+ * security; gli altri sensori (0x1818/0x1816/0x180D) restano SEC_UNSECURED.
+ * SEC_UNSECURED su uno slot wheel READY = finestra di compatibilita' in chiaro
+ * del rollout ESP32-first (CONTRACT.md:259-261), contro un wheel v0.3.3 senza SMP. */
+typedef enum {
+    SEC_UNSECURED = 0,
+    SEC_SECURING  = 1,
+    SEC_ENCRYPTED = 2,
+} slot_sec_t;
 
 typedef struct {
     ble_addr_t   addr;
@@ -95,6 +107,7 @@ typedef struct {
     uint16_t     cmd_val_handle;    /* solo wheel: handle 0xBB03 (cmd write)  */
     uint16_t     cfg_val_handle;    /* solo wheel: handle 0xBB04 (config write)*/
     slot_state_t state;
+    slot_sec_t   sec;               /* §2.G: esito cifratura del link (solo wheel) */
 } sensor_slot_t;
 
 /* 4 slot: power + csc + hr + wheel. Richiede CONFIG_BT_NIMBLE_MAX_CONNECTIONS>=5
@@ -607,6 +620,23 @@ static bool seen_contains(const ble_addr_t *addr) {
     return false;
 }
 
+/* §2.G v0.3.4: porta uno slot wheel alla discovery dopo che la security e' stata
+ * RISOLTA (gate strutturale: subscribe 0xBB01 e write 0xBB03/0xBB04 discendono
+ * tutti da on_disc_svc, che parte solo qui — mai prima dell'esito SMP).
+ *   encrypted=true  -> link cifrato Level>=2 (steady-state v0.3.4).
+ *   encrypted=false -> compatibilita' in chiaro del rollout ESP32-first
+ *                      (CONTRACT.md:259-261): un wheel v0.3.3 ancora senza SMP non
+ *                      puo' cifrare; il confine opera in chiaro come in v0.3.3
+ *                      finche' il wheel non aggiorna e pretende la cifratura. */
+static void wheel_secured_proceed(sensor_slot_t *slot, uint16_t conn_h, bool encrypted) {
+    slot->sec   = encrypted ? SEC_ENCRYPTED : SEC_UNSECURED;
+    slot->state = SLOT_DISC_SVC;
+    ESP_LOGI(TAG, "Slot[%td] wheel %s — avvio discovery (0xBB00)",
+             slot - s_slots, encrypted ? "cifrato (L>=2)" : "in chiaro (rollout)");
+    ble_uuid16_t u = BLE_UUID16_INIT(slot->svc_uuid);
+    ble_gattc_disc_svc_by_uuid(conn_h, &u.u, on_disc_svc, slot);
+}
+
 /* ─────────────────────────────────────────────────────────────────────────── */
 /*  GAP EVENT HANDLER CENTRALE                                                   */
 /* ─────────────────────────────────────────────────────────────────────────── */
@@ -692,14 +722,43 @@ static int central_gap_event(struct ble_gap_event *event, void *arg) {
         for (int i = 0; i < N_SLOTS; i++) {
             if (s_slots[i].state == SLOT_CONNECTING) {
                 s_slots[i].conn_handle = conn_h;
-                s_slots[i].state       = SLOT_DISC_SVC;
 
-                ESP_LOGI(TAG, "Slot[%d] connesso conn_h=%d svc=0x%04X — avvio discovery",
-                         i, conn_h, s_slots[i].svc_uuid);
+                if (s_slots[i].svc_uuid == UUID_SVC_WHEEL) {
+                    /* §2.G v0.3.4: confine G cifrato+bondato. NON avviare la
+                     * discovery qui: avvia la security e attendi ENC_CHANGE
+                     * (wheel_secured_proceed parte solo dopo l'esito SMP). */
+                    s_slots[i].state = SLOT_SECURING;
+                    s_slots[i].sec   = SEC_SECURING;
+                    ESP_LOGI(TAG, "Slot[%d] wheel conn_h=%d — avvio security (0xBB00)",
+                             i, conn_h);
+                    int src = ble_gap_security_initiate(conn_h);
+                    if (src == BLE_HS_EALREADY) {
+                        /* Riconnessione bonded: il link puo' essere GIA' cifrato e
+                         * NimBLE non emettere un nuovo ENC_CHANGE. Se gia' cifrato
+                         * procedi subito; altrimenti resta in SECURING (ENC_CHANGE). */
+                        struct ble_gap_conn_desc d;
+                        if (ble_gap_conn_find(conn_h, &d) == 0 && d.sec_state.encrypted)
+                            wheel_secured_proceed(&s_slots[i], conn_h, true);
+                    } else if (src != 0) {
+                        /* Rollout (CONTRACT.md:259-261): un wheel v0.3.3 senza SMP
+                         * non puo' cifrare. Compatibilita' in chiaro: procedi cmq
+                         * con la discovery come in v0.3.3 (bond assente). */
+                        ESP_LOGW(TAG, "Slot[%d] security rc=%d — compat in chiaro (rollout)",
+                                 i, src);
+                        wheel_secured_proceed(&s_slots[i], conn_h, false);
+                    }
+                    /* src==0: attendi BLE_GAP_EVENT_ENC_CHANGE. */
+                } else {
+                    /* Altri sensori (0x1818/0x1816/0x180D): in chiaro come prima. */
+                    s_slots[i].state = SLOT_DISC_SVC;
 
-                ble_uuid16_t svc_uuid = BLE_UUID16_INIT(s_slots[i].svc_uuid);
-                ble_gattc_disc_svc_by_uuid(conn_h, &svc_uuid.u,
-                                           on_disc_svc, &s_slots[i]);
+                    ESP_LOGI(TAG, "Slot[%d] connesso conn_h=%d svc=0x%04X — avvio discovery",
+                             i, conn_h, s_slots[i].svc_uuid);
+
+                    ble_uuid16_t svc_uuid = BLE_UUID16_INIT(s_slots[i].svc_uuid);
+                    ble_gattc_disc_svc_by_uuid(conn_h, &svc_uuid.u,
+                                               on_disc_svc, &s_slots[i]);
+                }
                 break;
             }
         }
@@ -753,6 +812,38 @@ static int central_gap_event(struct ble_gap_event *event, void *arg) {
             case UUID_SVC_WHEEL: ble_notify_wheel_stream(buf, (uint8_t)copy_len); break;
         }
         break;
+    }
+
+    /* ── §2.G: cifratura del confine G risolta (successo o fallimento SMP) ── */
+    case BLE_GAP_EVENT_ENC_CHANGE: {
+        sensor_slot_t *slot = slot_by_conn(event->enc_change.conn_handle);
+        if (!slot) break;                          /* conn telefono: handler peripheral */
+        if (slot->state != SLOT_SECURING) break;   /* gia' risolto / evento spurio */
+        if (event->enc_change.status == 0) {
+            /* Conformita' "Level >= 2": non dedurre dal solo status, verifica
+             * esplicitamente che il link risulti cifrato. */
+            struct ble_gap_conn_desc desc;
+            bool enc = (ble_gap_conn_find(event->enc_change.conn_handle, &desc) == 0
+                        && desc.sec_state.encrypted);
+            wheel_secured_proceed(slot, slot->conn_handle, enc);
+        } else {
+            /* Rollout (CONTRACT.md:259-261): SMP fallita (wheel v0.3.3 senza SMP).
+             * Compatibilita' in chiaro: procedi cmq, come v0.3.3. Quando il wheel
+             * aggiornera' e pretendera' la cifratura, questo ramo non sara' piu'
+             * raggiunto e il link sara' Level>=2 col bond persistito. */
+            ESP_LOGW(TAG, "Slot[%td] wheel enc status=%d — compat in chiaro (rollout)",
+                     slot - s_slots, event->enc_change.status);
+            wheel_secured_proceed(slot, slot->conn_handle, false);
+        }
+        break;
+    }
+
+    /* ── §2.G: re-bond di un peer (wheel) con chiavi stale ── */
+    case BLE_GAP_EVENT_REPEAT_PAIRING: {
+        struct ble_gap_conn_desc desc;
+        if (ble_gap_conn_find(event->repeat_pairing.conn_handle, &desc) == 0)
+            ble_store_util_delete_peer(&desc.peer_id_addr);
+        return BLE_GAP_REPEAT_PAIRING_RETRY;
     }
 
     /* ── Scan completato senza target (timeout) ────────────────────────── */
