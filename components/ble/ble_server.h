@@ -621,6 +621,11 @@ esp_err_t ble_server_init(aerodrag_sensors_t *sensors, SemaphoreHandle_t mutex,
     g_sensors_ptr       = sensors;
     g_ble_sensors_mutex = mutex;
     g_cal_ptr           = cal;
+    // Silenzia lo spam di log dell'host NimBLE (INFO "GATT procedure initiated: notify",
+    // ~30/s durante lo streaming, che inonda la UART e fa timeoutare il monitor): tieni
+    // solo WARN/ERROR. Filtraggio runtime per-tag (abilitato da CONFIG_LOG_MAXIMUM_LEVEL_DEBUG);
+    // i nostri tag (aerodrag/ble_*/coach/...) restano a INFO.
+    esp_log_level_set("NimBLE", ESP_LOG_WARN);
     nimble_port_init();
     ble_svc_gap_init();
     ble_svc_gatt_init();
