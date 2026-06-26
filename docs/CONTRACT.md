@@ -1,10 +1,10 @@
 # AeroDrag — Interface Contract
 
 ```
-contract: v0.3.1
+contract: v0.3.2
 owner:    aerodrag-firmware (questa repo è la fonte di verità unica)
 status:   ratified
-date:     2026-06-22
+date:     2026-06-26
 ```
 
 > **v0.3.0 — Fase 1: recisione del live app↔Pi.** Il telefono resta **solo-BLE** verso
@@ -231,7 +231,8 @@ l'ESP32 (central) consuma:
 | CONFIG | `0xBB04` | R+W | 8 | `float tireCircM + float massKg` ← scritto dall'ESP32 da `CONFIG 0xaa08` |
 
 Governance: modifiche a `0xBB00` passano dalla seam `firmware↔wheel` (le due parti
-sono nello stesso repo madre, ma restano firmware distinti) e dalla ratifica qui.
+vivono in **repo distinti** — firmware in `aerodrag-firmware`, sensore ruota in
+`aerodrag-wheel` — e restano firmware distinti) e dalla ratifica qui.
 
 ---
 
@@ -485,6 +486,15 @@ grezzo ad alta frequenza (vedi forward-compat in §3) e l'identità atleta-centr
 ---
 
 ## 9. Changelog
+
+### v0.3.2 — 2026-06-26
+**Errata (PATCH: solo documentazione, nessuna modifica al wire).** Allineamento dopo
+l'esecuzione del cleanup `wheel-fw/`.
+- **`wheel-fw/` rimossa dalla repo madre** (commit di pulizia eseguito): il firmware del
+  sensore ruota vive **solo** in `aerodrag-wheel`. La madre resta competente sull'ESP32.
+- **§2.G governance** — corretta la frase «le due parti sono nello stesso repo madre»
+  (ora falsa): firmware e sensore ruota stanno in **repo distinti**. Il wire `0xBB00`
+  resta **invariato**.
 
 ### v0.3.1 — 2026-06-22
 **Audit cross-repo + ricollocazione firmware ruota** (PATCH: chiarimenti/vincoli,
