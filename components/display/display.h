@@ -454,7 +454,7 @@ switch (g_screen) {
         }
         int sz  = qrcodegen_getSize(g_qr_cache);
         const int SCALE = 6;
-        const int PAD   = 10;
+        const int PAD   = 24;  // quiet-zone = 4 × SCALE (standard QR); fix #24 (era 10 ≈ 1,67 moduli → illeggibile)
         int qr_px  = sz * SCALE;
         int rect_w = qr_px + 2 * PAD;
         int rect_h = qr_px + 2 * PAD;
