@@ -10,7 +10,6 @@ static aerodrag_cal_t      *g_cal_ptr = NULL;
 #include "host/ble_uuid.h"
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
-#include "store/config/ble_store_config.h"   /* ble_store_config_init (bond NVS) */
 #include "host/util/util.h"                    /* ble_store_util_delete_peer (REPEAT_PAIRING) */
 #include "aerodrag_types.h"
 #include "ble_sensors.h"
@@ -22,6 +21,11 @@ static aerodrag_cal_t      *g_cal_ptr = NULL;
 // ble_gap_event caso DISCONNECT e di config_access_cb, che la usano). NON chiamare
 // NVS dal contesto host NimBLE: setta solo un flag, la scrittura la fa housekeeping.
 extern void cal_request_persist(void);
+
+// §2.G v0.3.4: ble_store_config_init() non e' esposta da un header pubblico ESP-IDF
+// NimBLE (l'header store/config dichiara solo read/write/delete). Prototipo a mano,
+// come negli esempi ufficiali (bleprph); il simbolo lo fornisce il componente bt.
+void ble_store_config_init(void);
 
 // ─── Service and characteristic UUIDs ────────────────────────────────────────
 static const ble_uuid128_t SVC_UUID = BLE_UUID128_INIT(
