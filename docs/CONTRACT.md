@@ -1,7 +1,7 @@
 # AeroDrag — Interface Contract
 
 ```
-contract: v0.3.2
+contract: v0.3.3
 owner:    aerodrag-firmware (questa repo è la fonte di verità unica)
 status:   ratified
 date:     2026-06-26
@@ -279,7 +279,7 @@ Endpoint app→pi (coach): `ws://<pi>:8080/coach` — **DEPRECATO** (v0.3.0).
   "cad": 90,
   "wind": 1.8,
   "battery": 85,
-  "pctAero": 87.0,
+  "pctAero": 87,
   "pitch": 2.3,
   "rho": 1.225,
   "lapEvent": false
@@ -300,7 +300,7 @@ Endpoint app→pi (coach): `ws://<pi>:8080/coach` — **DEPRECATO** (v0.3.0).
 | `cad` | number | rpm | 0 se assente |
 | `wind` | number | m/s | `max(0, vAir − vGround)` |
 | `battery` | number | % | 0–100 |
-| `pctAero` | number | **% 0–100** | 1 decimale |
+| `pctAero` | number | **% 0–100** | intero (confine B: firmware `uint8_t`) |
 | `pitch` | number | ° | inclinazione bici |
 | `rho` | number | kg/m³ | densità aria |
 | `lapEvent` | boolean | — | `true` una sola volta al cambio giro |
@@ -486,6 +486,14 @@ grezzo ad alta frequenza (vedi forward-compat in §3) e l'identità atleta-centr
 ---
 
 ## 9. Changelog
+
+### v0.3.3 — 2026-06-26
+**Errata (PATCH: solo documentazione, nessuna modifica al wire).** Allineamento §3 alla
+realtà del firmware dopo audit di conformità ESP↔Pi.
+- **`pctAero` (§3, confine B) è un INTERO 0–100**, non a 1 decimale: il firmware lo
+  calcola come `uint8_t` (`physics.h`, `aerodrag_types.h`) e lo emette `%d`. La nota
+  «1 decimale» e l'esempio `87.0` erano fuorvianti → corretti a intero (`87`). Nessun
+  cambio di scala/significato (0–100 invariato), nessun cambio di wire.
 
 ### v0.3.2 — 2026-06-26
 **Errata (PATCH: solo documentazione, nessuna modifica al wire).** Allineamento dopo
