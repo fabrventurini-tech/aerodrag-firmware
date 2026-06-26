@@ -5,7 +5,6 @@
 **File principale:** `components/display/display.h` (renderer software: font bitmap 5×7, archi, rettangoli).
 
 > Tutte le modifiche sono **solo** nel repo `aerodrag-firmware`. Nessuna toccata a dashboard/app/pi.
-> ⚠️ Il README del repo cita un LCD-1.46 **rotondo** → è un **refuso di codice vecchio**. Il display reale è **rettangolare 2,8"**.
 > 🛑 **NOTA IMPLEMENTAZIONE (dalla revisione):** la colonna RGB565 della tabella §1 contiene **3 valori errati**. **Ricalcola SEMPRE lRGB565 dallhex** con `((R>>3)<<11)|((G>>2)<<5)|(B>>3)` — lhex è la fonte di verità. Correzioni note: `COL_BG #07090f → 0x0041` (non 0x0841) · `COL_TEXTDIM #8398bd → 0x84D7` (non 0x8417) · `COL_TEXT #dbe6f6 → 0xDF3E` (non 0xDF1E).
 
 > ⚠️ **Contratto dati INVARIATO (v0.2.3)** — questo redesign è puramente visivo: nessun nuovo campo sul wire.
@@ -129,4 +128,3 @@ Quadranti divisi da `COL_PANEL`: CdA (accent) · HR (alert) · Cadence (power) �
 - [ ] Tutte e **6** le `SCR_*` renderizzano correttamente (incl. la nuova `SCR_SPEED`).
 - [ ] Coordinate verificate a 240×320 (non 480×640).
 - [ ] Valori RGB565 corretti a video (no overflow/endianness sul bus SPI).
-- [ ] Riferimento LCD-1.46 rotondo rimosso dai commenti/README.
