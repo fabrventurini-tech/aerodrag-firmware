@@ -637,6 +637,25 @@ static void wheel_secured_proceed(sensor_slot_t *slot, uint16_t conn_h, bool enc
     ble_gattc_disc_svc_by_uuid(conn_h, &u.u, on_disc_svc, slot);
 }
 
+/* Issue #36: true se esiste un bond (LTK) persistito per questo peer identity addr.
+ * Distingue un wheel v0.3.4 che ha PERSO il bond (factory-reset -> LTK stale lato
+ * ESP32, l'encrypt fallisce) da un wheel legacy v0.3.3 mai bondato (nessun SMP):
+ * solo nel primo caso ha senso cancellare il bond stale per forzare un re-pairing
+ * pulito; nel secondo NON c'e' bond e va preservata la compat-in-chiaro del rollout.
+ * ble_store_util_bonded_peers e' nello stesso header (host/util/util.h) di
+ * ble_store_util_delete_peer; confronto type+val (no ble_addr_cmp) come idioma locale. */
+static bool wheel_bond_exists(const ble_addr_t *peer_id_addr) {
+    ble_addr_t peers[8];   /* cap locale all'enumerazione: MAX_BONDS=3, 8 e' margine */
+    int num_peers = 0;
+    if (ble_store_util_bonded_peers(peers, &num_peers, 8) != 0)
+        return false;
+    for (int i = 0; i < num_peers; i++)
+        if (peers[i].type == peer_id_addr->type &&
+            memcmp(peers[i].val, peer_id_addr->val, 6) == 0)
+            return true;
+    return false;
+}
+
 /* ─────────────────────────────────────────────────────────────────────────── */
 /*  GAP EVENT HANDLER CENTRALE                                                   */
 /* ─────────────────────────────────────────────────────────────────────────── */
@@ -827,13 +846,33 @@ static int central_gap_event(struct ble_gap_event *event, void *arg) {
                         && desc.sec_state.encrypted);
             wheel_secured_proceed(slot, slot->conn_handle, enc);
         } else {
-            /* Rollout (CONTRACT.md:259-261): SMP fallita (wheel v0.3.3 senza SMP).
-             * Compatibilita' in chiaro: procedi cmq, come v0.3.3. Quando il wheel
-             * aggiornera' e pretendera' la cifratura, questo ramo non sara' piu'
-             * raggiunto e il link sara' Level>=2 col bond persistito. */
-            ESP_LOGW(TAG, "Slot[%td] wheel enc status=%d — compat in chiaro (rollout)",
-                     slot - s_slots, event->enc_change.status);
-            wheel_secured_proceed(slot, slot->conn_handle, false);
+            /* enc-fail. Issue #36 — distingui bond-desync da wheel legacy v0.3.3:
+             * - se ESISTE un bond per il peer, l'encrypt e' fallito con LTK STALE
+             *   (wheel factory-reset / bond perso): cancella il bond e TERMINA, cosi'
+             *   la riconnessione fa pairing PULITO (recupero HW-indipendente, non piu'
+             *   subordinato a un eventuale REPEAT_PAIRING del peripheral). NON proseguire
+             *   in chiaro: un wheel v0.3.4 rifiuterebbe comunque la CCCD non cifrata
+             *   (loop), e non vogliamo esporre lo STREAM in chiaro su un peer bondato.
+             * - se NON esiste bond (wheel legacy v0.3.3 senza SMP): compat in chiaro
+             *   come prima (CONTRACT.md:259-261), nessun bond da cancellare. */
+            struct ble_gap_conn_desc desc;
+            if (ble_gap_conn_find(event->enc_change.conn_handle, &desc) == 0 &&
+                wheel_bond_exists(&desc.peer_id_addr)) {
+                ESP_LOGW(TAG, "Slot[%td] wheel enc fallita (status=%d) con bond presente — "
+                         "LTK stale: cancello il bond e ritento pairing pulito",
+                         slot - s_slots, event->enc_change.status);
+                ble_store_util_delete_peer(&desc.peer_id_addr);
+                slot->sec = SEC_UNSECURED;
+                ble_gap_terminate(event->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+            } else {
+                /* Rollout (CONTRACT.md:259-261): nessun bond atteso (wheel v0.3.3 senza
+                 * SMP). Compatibilita' in chiaro: procedi come v0.3.3; quando il wheel
+                 * aggiornera' e pretendera' la cifratura, questo ramo non sara' piu'
+                 * raggiunto e il link sara' Level>=2 col bond persistito. */
+                ESP_LOGW(TAG, "Slot[%td] wheel enc status=%d — compat in chiaro (rollout)",
+                         slot - s_slots, event->enc_change.status);
+                wheel_secured_proceed(slot, slot->conn_handle, false);
+            }
         }
         break;
     }
